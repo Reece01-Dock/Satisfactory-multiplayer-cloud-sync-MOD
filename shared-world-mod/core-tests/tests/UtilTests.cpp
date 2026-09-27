@@ -121,3 +121,16 @@ SW_TEST(Random_UuidShape)
 	EXPECT_TRUE(S.Hex(16) != S.Hex(16));
 	EXPECT_EQ(S.Hex(8).size(), size_t(16));
 }
+
+SW_TEST(Util_MemoryLogSinkKeepsNewestLines)
+{
+	sw::MemoryLogSink Sink(4);
+	for (int i = 0; i < 23; ++i) Sink.Write(sw::LogLevel::Info, "E", {{"n", std::to_string(i)}});
+	const auto Lines = Sink.Lines();
+	EXPECT_TRUE(Lines.size() >= 4 && Lines.size() <= 5);
+	EXPECT_TRUE(Lines.back().find("n=22") != std::string::npos);
+	EXPECT_TRUE(!Sink.Contains("n=3 ") && Sink.Contains("n=22"));
+	sw::MemoryLogSink Unbounded;
+	for (int i = 0; i < 50; ++i) Unbounded.Write(sw::LogLevel::Info, "E", {});
+	EXPECT_EQ(Unbounded.Lines().size(), size_t(50));
+}

@@ -68,6 +68,11 @@ namespace sw
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
 		Stored.push_back(FormatLogLine(Event, Fields));
+		if (MaxLines > 0 && Stored.size() > MaxLines + MaxLines / 4)
+		{
+			// Trim in batches so a busy log does not shift the vector on every line.
+			Stored.erase(Stored.begin(), Stored.end() - static_cast<std::ptrdiff_t>(MaxLines));
+		}
 	}
 
 	std::vector<std::string> MemoryLogSink::Lines() const

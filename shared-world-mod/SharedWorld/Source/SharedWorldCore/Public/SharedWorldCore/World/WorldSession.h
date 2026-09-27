@@ -136,6 +136,12 @@ namespace sw
 		/** The game could not join View().Join. */
 		void OnJoinFailed(const std::string& Reason);
 		void OnHostConnectionLost();
+		/**
+		 * The player left the host's game on purpose (quit to menu). Stops
+		 * following the world, so this PC never takes over hosting in the
+		 * background after the host leaves.
+		 */
+		void OnLeftAsClient();
 
 		/** Drives heartbeats and polling. Call ~1/s from the game thread. */
 		void Tick(TimeMs Now);

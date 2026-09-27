@@ -477,6 +477,30 @@ SW_TEST(World_HostCrashClientsRecover)
 	EXPECT_EQ(B.V().Revision, int64_t(1)); // newest trustworthy revision
 }
 
+// A player who quit to the menu must never take over in the background.
+SW_TEST(World_ClientThatLeftNeverTakesOver)
+{
+	Cluster C;
+	Seed(C, "rev1");
+	Peer A = MakePeer(C, 1), B = MakePeer(C, 2);
+	HostUp(A, "sessionA");
+	A.Session->SetPlayers({{"P1", "player-1"}, {"P2", "player-2"}});
+	Step(C, {&A}, Seconds(25));
+	B.Session->Play();
+	B.Settle();
+	B.Session->OnJoinedAsClient();
+	EXPECT_STATE(B, SessionState::Joined);
+	B.Session->OnLeftAsClient();
+	EXPECT_STATE(B, SessionState::Idle);
+	A.Crash();
+	Step(C, {&B}, Seconds(200)); // far past expiry and every takeover slot
+	Step(C, {&B}, Seconds(5));
+	EXPECT_STATE(B, SessionState::Idle);
+	EXPECT_TRUE(!file::Exists(B.SavePath())); // nothing downloaded, nothing hosted
+	B.Session->OnLeftAsClient(); // no-op outside JOINED
+	EXPECT_STATE(B, SessionState::Idle);
+}
+
 SW_TEST(World_NewerCloudRevisionRefusesUpload)
 {
 	Cluster C;

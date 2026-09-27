@@ -47,6 +47,8 @@ namespace sw
 	class MemoryLogSink final : public ILogSink
 	{
 	public:
+		/** MaxLines > 0 keeps only the newest lines (the in-game diagnostics ring). */
+		explicit MemoryLogSink(size_t InMaxLines = 0) : MaxLines(InMaxLines) {}
 		void Write(LogLevel Level, const std::string& Event, const LogFields& Fields) override;
 		std::vector<std::string> Lines() const;
 		bool Contains(const std::string& Needle) const;
@@ -54,6 +56,7 @@ namespace sw
 	private:
 		mutable std::mutex Mutex;
 		std::vector<std::string> Stored;
+		size_t MaxLines;
 	};
 
 	/** Writes to stderr. */

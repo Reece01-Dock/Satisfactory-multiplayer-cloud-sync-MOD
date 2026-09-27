@@ -860,6 +860,17 @@ namespace sw
 		Set(S::Reconnecting, "HOST CONNECTION LOST. Recovering Shared World...");
 	}
 
+	void WorldSession::OnLeftAsClient()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (Current.State != S::Joined) return;
+		Leases->Store().Log().Info("PlayerLeft", {{"world", Current.WorldId}, {"generation", std::to_string(FollowGeneration)}});
+		FollowGeneration = 0;
+		LastSeenPlayers.clear();
+		Current.Join.reset();
+		Set(S::Idle, "Left the Shared World.");
+	}
+
 	void WorldSession::DoFollowHost()
 	{
 		auto Snap = Leases->Store().Load();
