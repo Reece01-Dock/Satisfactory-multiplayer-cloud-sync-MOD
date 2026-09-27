@@ -18,8 +18,15 @@ list(FILTER CORE_SOURCES EXCLUDE REGEX "SharedWorldCoreModule\\.cpp$")
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 
-# Match Unreal: no exceptions, no RTTI, strict warnings.
-set(SW_FLAGS -fno-exceptions -fno-rtti -Wall -Wextra -Wshadow -Werror -Wno-missing-field-initializers)
+# Match Unreal: no exceptions, no RTTI, strict warnings (shadowing is an
+# error in Unreal builds too).
+if(MSVC)
+  # C4100 unreferenced parameter and C4127 constant conditional are noise here.
+  set(SW_FLAGS /W4 /WX /GR- /EHs-c- /D_HAS_EXCEPTIONS=0 /utf-8 /permissive- /wd4100 /wd4127
+      /w14456 /w14457 /w14458 /w14459 /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX)
+else()
+  set(SW_FLAGS -fno-exceptions -fno-rtti -Wall -Wextra -Wshadow -Werror -Wno-missing-field-initializers)
+endif()
 if(SW_SANITIZE)
   list(APPEND SW_FLAGS -fsanitize=${SW_SANITIZE} -fno-omit-frame-pointer -g)
   set(SW_LINK -fsanitize=${SW_SANITIZE})

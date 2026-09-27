@@ -1,0 +1,44 @@
+name: core
+
+# Builds and tests SharedWorldCore (the C++ core compiled into the mod)
+# natively, with the same restrictions Unreal applies: no exceptions,
+# no RTTI, warnings as errors, shadowing as error.
+on:
+  push:
+    paths: ["shared-world-mod/**", ".github/workflows/core.yml"]
+  pull_request:
+    paths: ["shared-world-mod/**", ".github/workflows/core.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gcc, cxx: g++, sanitize: "" }
+          - { name: clang, cxx: clang++, sanitize: "" }
+          - { name: asan-ubsan, cxx: clang++, sanitize: "address,undefined" }
+          - { name: tsan, cxx: clang++, sanitize: "thread" }
+    name: linux-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build zlib1g-dev
+      - name: Configure
+        run: cmake -S shared-world-mod/core-tests -B build -G Ninja -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_BUILD_TYPE=Debug -DSW_SANITIZE=${{ matrix.sanitize }}
+      - run: cmake --build build
+      - run: ./build/sw_tests
+
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zlib
+        run: vcpkg install zlib:x64-windows
+      - name: Configure
+        run: cmake -S shared-world-mod/core-tests -B build -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+      - run: cmake --build build --config Debug
+      - run: ./build/Debug/sw_tests.exe

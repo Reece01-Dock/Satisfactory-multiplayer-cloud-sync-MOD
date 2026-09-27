@@ -102,7 +102,7 @@ namespace sw
 		{
 			Status S = file::CreateExclusive(LockPath, "lock");
 			if (S.Ok()) return {};
-			if (!S.Is(ErrorCode::AlreadyExists)) return S;
+			if (!S.Is(ErrorCode::AlreadyExists) && !S.Is(ErrorCode::Contention)) return S;
 			auto Age = file::AgeSeconds(LockPath);
 			if (Age.Ok() && Age.Value() > StaleLockSeconds)
 			{

@@ -158,6 +158,14 @@ namespace sw::file
 			{
 				return MakeError(ErrorCode::AlreadyExists, "already exists '" + Path + "'");
 			}
+#if defined(_WIN32)
+			// A file being deleted by another process ("delete pending") cannot be
+			// created and reports EACCES instead of EEXIST: transient, retryable.
+			if (errno == EACCES)
+			{
+				return MakeError(ErrorCode::Contention, "busy '" + Path + "'");
+			}
+#endif
 			return IoError("could not create", Path);
 		}
 		return WriteAndClose(F, Path, Data);
