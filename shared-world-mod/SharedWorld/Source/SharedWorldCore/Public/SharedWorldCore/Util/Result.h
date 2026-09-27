@@ -101,3 +101,11 @@ namespace sw
 		if (!SW_CONCAT(sw_r_, __LINE__).Ok())          \
 			return SW_CONCAT(sw_r_, __LINE__).Err();   \
 	} while (0)
+
+// SW_ASSIGN(lhs, expr): evaluate a Result expression; on error return it from
+// the enclosing function, otherwise move the value into lhs.
+#define SW_ASSIGN(lhs, expr)                                   \
+	auto SW_CONCAT(sw_a_, __LINE__) = (expr);                  \
+	if (!SW_CONCAT(sw_a_, __LINE__).Ok())                      \
+		return SW_CONCAT(sw_a_, __LINE__).Err();               \
+	lhs = std::move(SW_CONCAT(sw_a_, __LINE__)).Value()
