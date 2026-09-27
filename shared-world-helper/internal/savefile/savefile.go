@@ -440,7 +440,9 @@ func TempPathNextTo(target string) string {
 
 // ReplaceAtomic renames a fully written and verified temp file over target.
 func ReplaceAtomic(tmp, target string) error {
-	f, err := os.Open(tmp)
+	// Flushing needs a handle opened for writing: on Windows
+	// FlushFileBuffers fails with "Access is denied" on a read-only handle.
+	f, err := os.OpenFile(tmp, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
