@@ -24,7 +24,7 @@ namespace swtest
 		W.Info.Name = "Our Factory";
 		W.Info.CreatedBy = Player(1);
 		W.Info.CreatedAt = StartTime;
-		W.Players.Members = {{"player-1", "P1", sw::Role::Owner}};
+		// Open membership: any player with storage access may play (membership has its own tests).
 		W.Settings.Name = "Our Factory";
 		return W;
 	}

@@ -43,10 +43,12 @@ namespace swtest
 	do { if (!(cond)) swtest::ReportFailure(__FILE__, __LINE__, "EXPECT_TRUE(" #cond ")"); } while (0)
 #define ASSERT_TRUE(cond)                                                     \
 	do { if (!(cond)) { swtest::ReportFailure(__FILE__, __LINE__, "ASSERT_TRUE(" #cond ")"); return; } } while (0)
+// Operands are copied: binding references could dangle into temporaries
+// (e.g. View().Error->Code).
 #define EXPECT_EQ(a, b)                                                       \
-	do { auto&& va_ = (a); auto&& vb_ = (b); if (!(va_ == vb_)) swtest::ReportFailure(__FILE__, __LINE__, std::string(#a " == " #b ": ") + swtest::Describe(va_, vb_)); } while (0)
+	do { auto va_ = (a); auto vb_ = (b); if (!(va_ == vb_)) swtest::ReportFailure(__FILE__, __LINE__, std::string(#a " == " #b ": ") + swtest::Describe(va_, vb_)); } while (0)
 #define ASSERT_EQ(a, b)                                                       \
-	do { auto&& va_ = (a); auto&& vb_ = (b); if (!(va_ == vb_)) { swtest::ReportFailure(__FILE__, __LINE__, std::string(#a " == " #b ": ") + swtest::Describe(va_, vb_)); return; } } while (0)
+	do { auto va_ = (a); auto vb_ = (b); if (!(va_ == vb_)) { swtest::ReportFailure(__FILE__, __LINE__, std::string(#a " == " #b ": ") + swtest::Describe(va_, vb_)); return; } } while (0)
 // Asserts a Result/Status succeeded, printing its error otherwise.
 #define ASSERT_OK(expr)                                                       \
 	do { auto&& r_ = (expr); if (!r_.Ok()) { swtest::ReportFailure(__FILE__, __LINE__, std::string(#expr " failed: ") + r_.Err().Describe()); return; } } while (0)
