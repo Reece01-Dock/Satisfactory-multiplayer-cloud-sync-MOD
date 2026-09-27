@@ -78,7 +78,7 @@ SW_TEST(Save_RejectsTruncatedCorruptAndGarbage)
 			swtest::ReportFailure(__FILE__, __LINE__, "truncated save accepted at " + std::to_string(Cut));
 	}
 	std::string Flipped = Full;
-	Flipped[Flipped.size() - 10] ^= char(0xFF);
+	Flipped[Flipped.size() - 10] = static_cast<char>(~Flipped[Flipped.size() - 10]); // flip every bit
 	EXPECT_ERR(save::ValidateBytes(Flipped), ErrorCode::Corrupt);
 	EXPECT_ERR(save::ValidateBytes(RandomBytes(5000)), ErrorCode::Corrupt);
 }

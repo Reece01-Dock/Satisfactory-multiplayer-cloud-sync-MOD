@@ -364,7 +364,7 @@ SW_TEST(World_CorruptCloudSaveReleasesLease)
 	Cluster C;
 	Seed(C, "rev1");
 	Peer B = MakePeer(C, 2);
-	C.Objects->CorruptOnGet = [](std::string& D) { D[100] ^= char(0xFF); };
+	C.Objects->CorruptOnGet = [](std::string& D) { D[100] = static_cast<char>(~D[100]); };
 	B.Session->Play();
 	B.Settle();
 	EXPECT_STATE(B, SessionState::Error);
