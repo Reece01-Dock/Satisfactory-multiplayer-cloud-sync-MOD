@@ -94,6 +94,8 @@ namespace sw
 	{
 		std::string DisplayName;
 		std::string PlayerId;
+		/** "" if unknown to the host (clients never write shared storage themselves). */
+		std::string InstallId;
 	};
 
 	/** Planned host migration: only Successor may acquire until ExpiresAt. */

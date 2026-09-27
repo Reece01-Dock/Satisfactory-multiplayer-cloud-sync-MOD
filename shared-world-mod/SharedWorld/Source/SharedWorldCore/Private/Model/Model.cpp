@@ -313,6 +313,7 @@ namespace sw
 				Value PV;
 				PV.Set("displayName", P.DisplayName);
 				PV.Set("playerId", P.PlayerId);
+				PV.Set("installId", P.InstallId);
 				Players.push_back(std::move(PV));
 			}
 			LV.Set("players", Value(std::move(Players)));
@@ -399,6 +400,7 @@ namespace sw
 					SessionPlayer SP;
 					SW_ASSIGN(SP.DisplayName, GetText(PV, "displayName", 128));
 					SW_ASSIGN(SP.PlayerId, GetOptionalText(PV, "playerId", 128));
+					SW_ASSIGN(SP.InstallId, GetOptionalText(PV, "installId", 128));
 					L.Players.push_back(std::move(SP));
 				}
 			}

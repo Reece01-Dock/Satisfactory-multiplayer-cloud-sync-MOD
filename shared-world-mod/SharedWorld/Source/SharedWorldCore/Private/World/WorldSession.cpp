@@ -882,7 +882,8 @@ namespace sw
 			}
 			return;
 		}
-		if (St.PendingHandoff && St.PendingHandoff->Successor.PlayerId == Cfg.Me.PlayerId && St.PendingHandoff->Successor.InstallId == Cfg.Me.InstallId)
+		if (St.PendingHandoff && St.PendingHandoff->Successor.PlayerId == Cfg.Me.PlayerId &&
+			(St.PendingHandoff->Successor.InstallId.empty() || St.PendingHandoff->Successor.InstallId == Cfg.Me.InstallId)) // empty: the host could not learn the successor's install id (clients never write shared storage)
 		{
 			Set(S::Acquiring, "Host migration: starting new host...");
 			Lock.unlock();
@@ -928,7 +929,8 @@ namespace sw
 		}
 		else if (St.PendingHandoff && Now < St.PendingHandoff->ExpiresAt)
 		{
-			if (St.PendingHandoff->Successor.PlayerId == Cfg.Me.PlayerId && St.PendingHandoff->Successor.InstallId == Cfg.Me.InstallId)
+			if (St.PendingHandoff->Successor.PlayerId == Cfg.Me.PlayerId &&
+				(St.PendingHandoff->Successor.InstallId.empty() || St.PendingHandoff->Successor.InstallId == Cfg.Me.InstallId))
 			{
 				Set(S::Acquiring, "Host migration: starting new host...");
 				Lock.unlock();
