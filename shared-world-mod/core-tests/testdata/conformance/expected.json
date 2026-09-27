@@ -1,0 +1,92 @@
+{
+  "bad_bitflip_header_version.sav": {
+    "valid": false
+  },
+  "bad_bitflip_last_chunk.sav": {
+    "valid": false
+  },
+  "bad_empty_body.sav": {
+    "valid": false
+  },
+  "bad_header_only.sav": {
+    "valid": false
+  },
+  "bad_random_garbage.sav": {
+    "valid": false
+  },
+  "bad_too_old_header.sav": {
+    "valid": false
+  },
+  "bad_trailing_byte.sav": {
+    "valid": false
+  },
+  "bad_trailing_chunk_garbage.sav": {
+    "valid": false
+  },
+  "bad_truncated_100.sav": {
+    "valid": false
+  },
+  "bad_truncated_1721.sav": {
+    "valid": false
+  },
+  "bad_truncated_1770.sav": {
+    "valid": false
+  },
+  "bad_truncated_300.sav": {
+    "valid": false
+  },
+  "bad_truncated_70.sav": {
+    "valid": false
+  },
+  "bad_truncated_885.sav": {
+    "valid": false
+  },
+  "bad_wrong_declared_size.sav": {
+    "valid": false
+  },
+  "valid_chunk_v1.sav": {
+    "valid": true,
+    "sessionName": "V1",
+    "mapName": "Persistent_Level"
+  },
+  "valid_go_builder.sav": {
+    "valid": true,
+    "sessionName": "GoBuilder",
+    "mapName": "Persistent_Level"
+  },
+  "valid_header_v13.sav": {
+    "valid": true,
+    "sessionName": "Old13",
+    "mapName": "Persistent_Level"
+  },
+  "valid_multichunk.sav": {
+    "valid": true,
+    "sessionName": "Multi",
+    "mapName": "Persistent_Level"
+  },
+  "valid_pre_ue5.sav": {
+    "valid": true,
+    "sessionName": "PreUE5",
+    "mapName": "Persistent_Level"
+  },
+  "valid_random_multichunk.sav": {
+    "valid": true,
+    "sessionName": "Rnd",
+    "mapName": "Persistent_Level"
+  },
+  "valid_small.sav": {
+    "valid": true,
+    "sessionName": "Small",
+    "mapName": "Persistent_Level"
+  },
+  "valid_utf16_name.sav": {
+    "valid": true,
+    "sessionName": "Fabrik Größe 工厂",
+    "mapName": "Persistent_Level"
+  },
+  "valid_with_checksum.sav": {
+    "valid": true,
+    "sessionName": "Sum",
+    "mapName": "Persistent_Level"
+  }
+}

@@ -4,13 +4,15 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "FGPlayerController.h"
+#include "SharedWorldCore/Model/Model.h"
 #include "SharedWorldSubsystem.h"
 
 ASharedWorldChatCommand::ASharedWorldChatCommand()
 {
 	CommandName = TEXT("sharedworld");
 	Aliases.Add(TEXT("sw"));
-	Usage = NSLOCTEXT("SharedWorld", "ChatUsage", "/sharedworld [status|save|stop]");
+	Usage = NSLOCTEXT("SharedWorld", "ChatUsage",
+		"/sharedworld status|history|players|save|stop|migrate <player>|allow <player> [role]|remove <player>|open|restrict|granthost <github-user>|log");
 	MinNumberOfArguments = 0;
 	bOnlyUsableByPlayer = true;
 }
@@ -24,16 +26,47 @@ EExecutionStatus ASharedWorldChatCommand::ExecuteCommand_Implementation(UCommand
 		return EExecutionStatus::UNCOMPLETED;
 	}
 	const FString Verb = Arguments.Num() > 0 ? Arguments[0].ToLower() : TEXT("status");
+	const FString Arg = Arguments.Num() > 1 ? Arguments[1] : FString();
+	const FString WorldId = SW->GetActiveWorldId();
+
+	// Async results go back to whoever asked, if they are still there.
+	TWeakObjectPtr<UCommandSender> WeakSender(Sender);
+	auto Reply = [WeakSender](bool bOk, const FString& Message)
+	{
+		if (UCommandSender* S = WeakSender.Get())
+		{
+			S->SendChatMessage(Message, bOk ? FLinearColor::White : FLinearColor::Red);
+		}
+	};
+
 	if (Verb == TEXT("status"))
 	{
 		Sender->SendChatMessage(SW->DescribeActiveSession());
 		return EExecutionStatus::COMPLETED;
 	}
-	// Commands run on the server; only the local (hosting) player may save or stop.
+	if (WorldId.IsEmpty())
+	{
+		Sender->SendChatMessage(TEXT("This game is not a Shared World session."), FLinearColor::Red);
+		return EExecutionStatus::UNCOMPLETED;
+	}
+	if (Verb == TEXT("history"))
+	{
+		SW->FetchHistory(WorldId, 10, Reply);
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Verb == TEXT("players"))
+	{
+		SW->FetchPlayers(WorldId, Reply);
+		return EExecutionStatus::COMPLETED;
+	}
+
+	// Everything below changes the world: only the hosting player (whose game
+	// runs this command locally) may use it. Roles in the world's member list
+	// are checked again by SharedWorldCore.
 	AFGPlayerController* PC = Sender->GetPlayer();
 	if (!PC || !PC->IsLocalController())
 	{
-		Sender->SendChatMessage(TEXT("Only the host can save or stop the shared world."), FLinearColor::Red);
+		Sender->SendChatMessage(TEXT("Only the host can do that."), FLinearColor::Red);
 		return EExecutionStatus::INSUFFICIENT_PERMISSIONS;
 	}
 	if (Verb == TEXT("save"))
@@ -44,6 +77,52 @@ EExecutionStatus ASharedWorldChatCommand::ExecuteCommand_Implementation(UCommand
 	if (Verb == TEXT("stop"))
 	{
 		Sender->SendChatMessage(SW->RequestStop());
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Verb == TEXT("log"))
+	{
+		Sender->SendChatMessage(SW->RecentLog(12));
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Verb == TEXT("open") || Verb == TEXT("restrict"))
+	{
+		SW->SetOpenMembership(WorldId, Verb == TEXT("open"), Reply);
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Arg.IsEmpty())
+	{
+		PrintCommandUsage(Sender);
+		return EExecutionStatus::BAD_ARGUMENTS;
+	}
+	if (Verb == TEXT("migrate"))
+	{
+		Sender->SendChatMessage(SW->RequestMigrationTo(WorldId, Arg));
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Verb == TEXT("allow"))
+	{
+		sw::Role Role = sw::Role::Member;
+		if (Arguments.Num() > 2)
+		{
+			auto Parsed = sw::ParseRole(TCHAR_TO_UTF8(*Arguments[2].ToLower()));
+			if (!Parsed || *Parsed == sw::Role::Owner)
+			{
+				Sender->SendChatMessage(TEXT("Role must be member, admin or viewer."), FLinearColor::Red);
+				return EExecutionStatus::BAD_ARGUMENTS;
+			}
+			Role = *Parsed;
+		}
+		SW->AllowPlayer(WorldId, Arg, Role, Reply);
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Verb == TEXT("remove"))
+	{
+		SW->RemovePlayer(WorldId, Arg, Reply);
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Verb == TEXT("granthost"))
+	{
+		SW->GrantHosting(WorldId, Arg, Reply);
 		return EExecutionStatus::COMPLETED;
 	}
 	PrintCommandUsage(Sender);

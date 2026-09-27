@@ -112,7 +112,10 @@ func (f *FS) lock(ctx context.Context, p string) (func(), error) {
 			_ = fh.Close()
 			return func() { _ = os.Remove(lockPath) }, nil
 		}
-		if !errors.Is(err, fs.ErrExist) {
+		// On Windows a lock file that another process is deleting is in a
+		// "delete pending" state and creating it fails with "Access is
+		// denied" instead of "exists"; both mean "busy, retry".
+		if !errors.Is(err, fs.ErrExist) && !errors.Is(err, fs.ErrPermission) {
 			return nil, err
 		}
 		if st, serr := os.Stat(lockPath); serr == nil && time.Since(st.ModTime()) > f.StaleLockAfter {

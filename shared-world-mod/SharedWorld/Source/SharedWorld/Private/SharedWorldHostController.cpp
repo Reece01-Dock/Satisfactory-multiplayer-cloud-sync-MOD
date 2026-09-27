@@ -2,12 +2,12 @@
 
 #include "CommonSessionSubsystem.h"
 #include "CommonSessionTypes.h"
-#include "Dom/JsonObject.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "FGSaveManagerInterface.h"
 #include "FGSaveSystem.h"
 #include "GameFramework/GameStateBase.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "LocalUserInfo.h"
@@ -23,6 +23,8 @@ namespace
 	constexpr double PublishTimeoutSeconds = 90.0;
 	/** Interval between checkpoint uploads while hosting. */
 	constexpr float CheckpointIntervalSeconds = 15.0f * 60.0f;
+
+	std::string Std(const FString& S) { return TCHAR_TO_UTF8(*S); }
 }
 
 void USharedWorldHostController::Init(USharedWorldSubsystem* InOwner)
@@ -37,47 +39,51 @@ void USharedWorldHostController::Reset()
 	GameWorld.Reset();
 	WorldId.Reset();
 	SaveName.Reset();
-	bInGameWorld = bSessionPublished = bSaving = bSaveIsFinal = bFinalUploadPending = bFinalUploadInFlight = false;
+	Session = nullptr;
+	bInGameWorld = bSessionPublished = bSaving = bWorldEnded = false;
+	LoadStartedAt = 0.0;
 }
 
-bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, const FString& InWorldId, const FString& InSaveName, FString& OutError)
+bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSession* InSession, const FString& InWorldId, const FString& SavePath)
 {
-	if (!MenuWorld)
+	if (!MenuWorld || !InSession)
 	{
-		OutError = TEXT("Hosting can only start from the main menu.");
 		return false;
 	}
 	UFGSaveSystem* SaveSystem = UFGSaveSystem::Get(MenuWorld);
 	APlayerController* PC = MenuWorld->GetFirstPlayerController();
 	if (!SaveSystem || !PC)
 	{
-		OutError = TEXT("The game's save system is not available.");
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"save system unavailable\""), *InWorldId);
 		return false;
 	}
+	const FString LoadName = FPaths::GetBaseFilename(SavePath);
 	FSaveHeader Header;
-	if (!SaveSystem->LoadSaveGameHeaderSync(InSaveName, Header))
+	if (!SaveSystem->LoadSaveGameHeaderSync(LoadName, Header))
 	{
-		OutError = FString::Printf(TEXT("Could not read the downloaded save %s."), *InSaveName);
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"could not read %s\""), *InWorldId, *SavePath);
 		return false;
 	}
 	USessionMigrationSequence* Sequence = SaveSystem->LoadSaveFile(Header, FLoadSaveFileParameters(), PC);
 	if (!Sequence)
 	{
-		OutError = TEXT("The game refused to load the shared save.");
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"game refused to load the shared save\""), *InWorldId);
 		return false;
 	}
 	// UNVERIFIED (see STATUS.md): whether LoadSaveFile already starts the
 	// returned sequence. The sibling APIs document that the caller starts it.
 	const bool bStarted = Sequence->Start();
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_load_started world=%s save=%s sequence_start=%d"), *InWorldId, *InSaveName, bStarted ? 1 : 0);
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_load_started world=%s save=%s sequence_start=%d"), *InWorldId, *LoadName, bStarted ? 1 : 0);
+	Session = InSession;
 	WorldId = InWorldId;
-	SaveName = InSaveName;
+	SaveName = LoadName;
+	LoadStartedAt = FPlatformTime::Seconds();
 	return true;
 }
 
 void USharedWorldHostController::OnGameWorldReady(UWorld* World)
 {
-	if (!IsBusy() || !World)
+	if (!IsBusy() || !World || !Session)
 	{
 		return;
 	}
@@ -85,7 +91,7 @@ void USharedWorldHostController::OnGameWorldReady(UWorld* World)
 	{
 		// We expected to host but ended up as a client: never upload from here.
 		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_world_is_client world=%s"), *WorldId);
-		Owner->SendSessionEvent(WorldId, TEXT("abort"), nullptr);
+		Session->OnWorldEnded();
 		Reset();
 		return;
 	}
@@ -103,12 +109,12 @@ FString USharedWorldHostController::FindOnlineSessionId() const
 	UOnlineIntegrationSubsystem* Online = GI ? GI->GetSubsystem<UOnlineIntegrationSubsystem>() : nullptr;
 	UOnlineIntegrationState* State = Online ? Online->GetOnlineIntegrationState() : nullptr;
 	ULocalUserInfo* User = State ? State->GetFirstUserInfo() : nullptr;
-	USessionInformation* Session = User ? User->GetGameSession() : nullptr;
-	if (!Session)
+	USessionInformation* SessionInfo = User ? User->GetGameSession() : nullptr;
+	if (!SessionInfo)
 	{
 		return FString();
 	}
-	const FCommonSession Handle = Session->GetSessionHandle();
+	const FCommonSession Handle = SessionInfo->GetSessionHandle();
 	if (!Handle.IsValid())
 	{
 		return FString();
@@ -134,21 +140,20 @@ bool USharedWorldHostController::TickPublishSession(float)
 void USharedWorldHostController::PublishSession(const FString& SessionId)
 {
 	bSessionPublished = true;
-	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
 	if (!SessionId.IsEmpty())
 	{
-		TSharedPtr<FJsonObject> Join = MakeShared<FJsonObject>();
-		Join->SetStringField(TEXT("kind"), TEXT("online-session-id"));
-		Join->SetStringField(TEXT("value"), SessionId);
-		Body->SetObjectField(TEXT("join"), Join);
+		sw::JoinInfo Join;
+		Join.Kind = "online-session-id";
+		Join.Data = Std(SessionId);
+		Session->OnHostingStarted(Join);
 		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=session_published world=%s"), *WorldId);
 	}
 	else
 	{
 		// Friends are told to join via the in-game friends list instead.
+		Session->OnHostingStarted(std::nullopt);
 		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=session_id_unavailable world=%s"), *WorldId);
 	}
-	Owner->SendSessionEvent(WorldId, TEXT("started"), Body);
 }
 
 bool USharedWorldHostController::TickCheckpoint(float)
@@ -159,14 +164,14 @@ bool USharedWorldHostController::TickCheckpoint(float)
 	}
 	if (!bSaving)
 	{
-		SaveAndUpload(false);
+		SaveAndUpload(sw::SaveKind::Checkpoint);
 	}
 	return true;
 }
 
-FString USharedWorldHostController::SaveAndUpload(bool bFinal)
+FString USharedWorldHostController::SaveAndUpload(sw::SaveKind Kind)
 {
-	if (!bInGameWorld || !GameWorld.IsValid())
+	if (!bInGameWorld || !GameWorld.IsValid() || !Session)
 	{
 		return TEXT("You are not hosting a shared world.");
 	}
@@ -180,13 +185,18 @@ FString USharedWorldHostController::SaveAndUpload(bool bFinal)
 		return TEXT("The game's save system is not available.");
 	}
 	bSaving = true;
-	bSaveIsFinal = bFinal;
+	SavingKind = Kind;
 	FOnSaveMgrInterfaceSaveGameComplete Done;
 	Done.BindUFunction(this, GET_FUNCTION_NAME_CHECKED(USharedWorldHostController, OnSaveComplete));
 	SaveSystem->SaveGame(SaveName, Done);
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=save_requested world=%s final=%d"), *WorldId, bFinal ? 1 : 0);
-	return bFinal ? TEXT("Saving and uploading the shared world. It is released once the upload is verified.")
-	              : TEXT("Saving and uploading a checkpoint...");
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=save_requested world=%s kind=%d"), *WorldId, static_cast<int32>(Kind));
+	switch (Kind)
+	{
+	case sw::SaveKind::Checkpoint: return TEXT("Saving and uploading a checkpoint...");
+	case sw::SaveKind::Migration: return TEXT("Saving the world for host migration...");
+	case sw::SaveKind::Final:
+	default: return TEXT("Saving and uploading the shared world. It is released once the upload is verified.");
+	}
 }
 
 void USharedWorldHostController::OnSaveComplete(bool bSuccess, const FText& ErrorMessage)
@@ -194,21 +204,14 @@ void USharedWorldHostController::OnSaveComplete(bool bSuccess, const FText& Erro
 	bSaving = false;
 	if (!bSuccess)
 	{
-		// Nothing is uploaded: the helper only ever hears about completed saves.
+		// Nothing is uploaded: the session only ever hears about completed saves.
 		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=save_failed world=%s error=\"%s\""), *WorldId, *ErrorMessage.ToString());
 		return;
 	}
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=save_completed world=%s final=%d"), *WorldId, bSaveIsFinal ? 1 : 0);
-	if (bSaveIsFinal)
-	{
-		bFinalUploadPending = true;
-		SendFinalUpload();
-		return;
-	}
-	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetStringField(TEXT("saveName"), SaveName);
-	Body->SetBoolField(TEXT("final"), false);
-	Owner->SendSessionEvent(WorldId, TEXT("saved"), Body);
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=save_completed world=%s kind=%d"), *WorldId, static_cast<int32>(SavingKind));
+	Session->OnSaveCompleted(SavingKind);
+	// Session moves to UPLOADING and, on success, to RELEASING/IDLE for a
+	// Final save; the subsystem calls NotifyReleased() once it sees IDLE.
 }
 
 void USharedWorldHostController::OnWorldTearDown(UWorld* World)
@@ -218,51 +221,35 @@ void USharedWorldHostController::OnWorldTearDown(UWorld* World)
 		return;
 	}
 	// The world is going away without an explicit stop (exit to menu / quit).
-	// Progress since the last completed save cannot be saved any more; upload
-	// the last completed shared save and release the world.
+	// Progress since the last completed save cannot be saved any more; the
+	// session uploads the last completed shared save (read from disk, no
+	// game callback needed) and releases. If that upload is refused or the
+	// connection drops, the subsystem calls RetryPendingRelease() on later
+	// ticks until it lands (WorldId/Session are kept for exactly that).
 	UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=host_world_teardown_without_stop world=%s"), *WorldId);
 	FTSTicker::GetCoreTicker().RemoveTicker(PublishTicker);
 	FTSTicker::GetCoreTicker().RemoveTicker(CheckpointTicker);
 	bInGameWorld = false;
+	bWorldEnded = true;
 	GameWorld.Reset();
-	bFinalUploadPending = true;
-	SendFinalUpload();
-}
-
-void USharedWorldHostController::SendFinalUpload()
-{
-	if (!bFinalUploadPending || bFinalUploadInFlight)
+	if (Session)
 	{
-		return;
+		Session->OnWorldEnded();
 	}
-	bFinalUploadInFlight = true;
-	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetStringField(TEXT("saveName"), SaveName);
-	Body->SetBoolField(TEXT("final"), true);
-	TWeakObjectPtr<USharedWorldHostController> WeakThis(this);
-	Owner->SendSessionEvent(WorldId, TEXT("saved"), Body, [WeakThis](bool bOk, int32 Code)
-	{
-		USharedWorldHostController* Self = WeakThis.Get();
-		if (!Self)
-		{
-			return;
-		}
-		Self->bFinalUploadInFlight = false;
-		if (bOk)
-		{
-			// The helper now owns the upload and the release.
-			Self->Reset();
-		}
-		// 409: a checkpoint upload is still running. The subsystem calls
-		// SendFinalUpload again as soon as the session is back in HOSTING.
-		// Other failures (helper unreachable) are retried the same way.
-		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=final_upload_requested ok=%d http=%d"), bOk ? 1 : 0, Code);
-	});
 }
 
-TArray<FSharedWorldPlayer> USharedWorldHostController::GetPlayers() const
+void USharedWorldHostController::RetryPendingRelease()
 {
-	TArray<FSharedWorldPlayer> Out;
+	if (!IsBusy() || bInGameWorld || !Session)
+	{
+		return; // still in-world, or nothing pending, or already released
+	}
+	Session->OnWorldEnded();
+}
+
+std::vector<sw::SessionPlayer> USharedWorldHostController::GetConnectedPlayers() const
+{
+	std::vector<sw::SessionPlayer> Out;
 	const UWorld* World = GameWorld.Get();
 	const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
 	if (!GS)
@@ -271,12 +258,21 @@ TArray<FSharedWorldPlayer> USharedWorldHostController::GetPlayers() const
 	}
 	for (const APlayerState* PS : GS->PlayerArray)
 	{
-		if (PS)
+		if (!PS)
 		{
-			FSharedWorldPlayer P;
-			P.DisplayName = PS->GetPlayerName();
-			Out.Add(P);
+			continue;
 		}
+		sw::SessionPlayer P;
+		P.DisplayName = Std(PS->GetPlayerName());
+		const FUniqueNetIdRepl NetId = PS->GetUniqueId();
+		if (NetId.IsValid())
+		{
+			P.PlayerId = Std(NetId.ToString());
+		}
+		// InstallId is left empty: a remote client's per-install id is never
+		// transmitted to the host (clients never write shared storage). See
+		// the WorldSession comment on PendingHandoff matching.
+		Out.push_back(std::move(P));
 	}
 	return Out;
 }

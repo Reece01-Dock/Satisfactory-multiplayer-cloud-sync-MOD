@@ -3,6 +3,8 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/Button.h"
+#include "Components/CheckBox.h"
+#include "Components/EditableTextBox.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
 #include "Components/SizeBox.h"
@@ -10,7 +12,7 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 #include "Engine/GameInstance.h"
-#include "Misc/DateTime.h"
+#include "SharedWorldCore/App/LocalSettings.h"
 #include "SharedWorldSubsystem.h"
 #include "Styling/CoreStyle.h"
 
@@ -44,18 +46,11 @@ namespace SharedWorldStyle
 		return B;
 	}
 
-	FString Ago(const FString& Iso)
+	UEditableTextBox* MakeInput(UWidgetTree* Tree, const FText& Hint)
 	{
-		FDateTime When;
-		if (Iso.IsEmpty() || !FDateTime::ParseIso8601(*Iso, When))
-		{
-			return FString();
-		}
-		const FTimespan D = FDateTime::UtcNow() - When;
-		if (D.GetTotalMinutes() < 1.0) return TEXT("just now");
-		if (D.GetTotalHours() < 1.0) return FString::Printf(TEXT("%d minutes ago"), FMath::FloorToInt(D.GetTotalMinutes()));
-		if (D.GetTotalDays() < 1.0) return FString::Printf(TEXT("%d hours ago"), FMath::FloorToInt(D.GetTotalHours()));
-		return FString::Printf(TEXT("%d days ago"), FMath::FloorToInt(D.GetTotalDays()));
+		UEditableTextBox* T = Tree->ConstructWidget<UEditableTextBox>();
+		T->SetHintText(Hint);
+		return T;
 	}
 
 	FString StatusLabel(const FString& S)
@@ -64,10 +59,17 @@ namespace SharedWorldStyle
 		if (S == TEXT("STARTING")) return TEXT("Starting");
 		if (S == TEXT("SAVING")) return TEXT("Online (saving)");
 		if (S == TEXT("STOPPING")) return TEXT("Closing");
+		if (S == TEXT("MIGRATING")) return TEXT("Changing host");
 		if (S == TEXT("RECOVERABLE")) return TEXT("Available (recovery needed)");
 		if (S == TEXT("NO_SAVE")) return TEXT("No shared save yet");
-		if (S == TEXT("UNREACHABLE")) return TEXT("Cloud unreachable");
+		if (S == TEXT("NOT_CREATED")) return TEXT("Not created yet");
+		if (S == TEXT("UNREACHABLE")) return TEXT("Storage unreachable");
 		return TEXT("Available");
+	}
+
+	void Show(UWidget* W, bool bVisible, bool bInteractive = false)
+	{
+		W->SetVisibility(!bVisible ? ESlateVisibility::Collapsed : bInteractive ? ESlateVisibility::Visible : ESlateVisibility::HitTestInvisible);
 	}
 }
 
@@ -103,26 +105,40 @@ void USharedWorldEntry::Build()
 	DetailText = MakeText(WidgetTree, 9, Muted);
 	for (UWidget* W : TArray<UWidget*>{TitleText, StatusText, InfoText, ProgressText, ErrorText, DetailText})
 	{
-		UVerticalBoxSlot* S = Col->AddChildToVerticalBox(W);
-		S->SetPadding(FMargin(0.f, 2.f));
+		Col->AddChildToVerticalBox(W)->SetPadding(FMargin(0.f, 2.f));
 	}
 
 	UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-	UVerticalBoxSlot* RowSlot = Col->AddChildToVerticalBox(Row);
-	RowSlot->SetPadding(FMargin(0.f, 8.f, 0.f, 0.f));
-
+	Col->AddChildToVerticalBox(Row)->SetPadding(FMargin(0.f, 8.f, 0.f, 0.f));
 	PlayButton = MakeButton(WidgetTree, Orange, PlayLabel, NSLOCTEXT("SharedWorld", "Play", "Play Shared World"));
 	PlayButton->OnClicked.AddDynamic(this, &USharedWorldEntry::OnPlayClicked);
-	UTextBlock* Unused = nullptr;
 	SecondaryButton = MakeButton(WidgetTree, Muted, SecondaryLabel, FText::GetEmpty());
 	SecondaryButton->OnClicked.AddDynamic(this, &USharedWorldEntry::OnSecondaryClicked);
+	UTextBlock* Unused = nullptr;
 	DetailsButton = MakeButton(WidgetTree, Muted, Unused, NSLOCTEXT("SharedWorld", "Details", "Details"));
 	DetailsButton->OnClicked.AddDynamic(this, &USharedWorldEntry::OnDetailsClicked);
 	for (UWidget* B : TArray<UWidget*>{PlayButton, SecondaryButton, DetailsButton})
 	{
-		UHorizontalBoxSlot* S = Row->AddChildToHorizontalBox(B);
-		S->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+		Row->AddChildToHorizontalBox(B)->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
 	}
+
+	// Details: history and local-list removal.
+	UHorizontalBox* Details = WidgetTree->ConstructWidget<UHorizontalBox>();
+	Col->AddChildToVerticalBox(Details)->SetPadding(FMargin(0.f, 6.f, 0.f, 0.f));
+	UButton* History = MakeButton(WidgetTree, Muted, Unused, NSLOCTEXT("SharedWorld", "History", "History"));
+	History->OnClicked.AddDynamic(this, &USharedWorldEntry::OnHistoryClicked);
+	UButton* Forget = MakeButton(WidgetTree, Muted, Unused, NSLOCTEXT("SharedWorld", "Forget", "Remove from list"));
+	Forget->OnClicked.AddDynamic(this, &USharedWorldEntry::OnForgetClicked);
+	Details->AddChildToHorizontalBox(History)->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+	RestoreInput = MakeInput(WidgetTree, NSLOCTEXT("SharedWorld", "RestoreHint", "Rev #"));
+	Details->AddChildToHorizontalBox(RestoreInput)->SetPadding(FMargin(0.f, 0.f, 4.f, 0.f));
+	UButton* Restore = MakeButton(WidgetTree, Muted, Unused, NSLOCTEXT("SharedWorld", "Restore", "Restore"));
+	Restore->OnClicked.AddDynamic(this, &USharedWorldEntry::OnRestoreClicked);
+	Details->AddChildToHorizontalBox(Restore)->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+	Details->AddChildToHorizontalBox(Forget);
+	DetailRow = Details;
+	HistoryText = MakeText(WidgetTree, 9, Text);
+	Col->AddChildToVerticalBox(HistoryText)->SetPadding(FMargin(0.f, 4.f, 0.f, 0.f));
 }
 
 USharedWorldSubsystem* USharedWorldEntry::GetSharedWorld() const
@@ -131,77 +147,72 @@ USharedWorldSubsystem* USharedWorldEntry::GetSharedWorld() const
 	return GI ? GI->GetSubsystem<USharedWorldSubsystem>() : nullptr;
 }
 
-void USharedWorldEntry::Update(const FSharedWorldStatus& S)
+void USharedWorldEntry::Update(const FSharedWorldEntryView& V)
 {
-	Current = S;
+	Current = V;
 	if (!TitleText)
 	{
 		return; // not built yet; RebuildWidget will run before display
 	}
-	const FSharedWorldSession& L = S.Local;
-	TitleText->SetText(FText::FromString(S.WorldName.IsEmpty() ? S.WorldId : S.WorldName));
+	TitleText->SetText(FText::FromString(V.WorldName.IsEmpty() ? V.WorldId : V.WorldName));
 
-	const bool bOnline = S.Status == TEXT("ONLINE") || S.Status == TEXT("SAVING");
-	StatusText->SetText(FText::FromString(TEXT("Status: ") + StatusLabel(S.Status)));
+	const bool bOnline = V.CloudStatus == TEXT("ONLINE") || V.CloudStatus == TEXT("SAVING");
+	StatusText->SetText(FText::FromString(TEXT("Status: ") + StatusLabel(V.CloudStatus)));
 	StatusText->SetColorAndOpacity(FSlateColor(bOnline ? Online : Muted));
 
 	TArray<FString> Info;
-	if (!S.HostName.IsEmpty() && S.Status != TEXT("AVAILABLE") && S.Status != TEXT("RECOVERABLE"))
+	if (!V.HostName.IsEmpty() && bOnline)
 	{
-		Info.Add(TEXT("Host: ") + S.HostName);
-		Info.Add(FString::Printf(TEXT("Players: %d"), S.PlayerCount));
+		Info.Add(TEXT("Host: ") + V.HostName);
+		Info.Add(FString::Printf(TEXT("Players: %d"), V.PlayerCount));
 	}
-	Info.Add(S.Revision > 0 ? FString::Printf(TEXT("Revision: %lld"), S.Revision) : TEXT("No save yet"));
-	const FString LastPlayed = Ago(S.LastPlayedAt);
-	if (!bOnline && !LastPlayed.IsEmpty())
+	Info.Add(V.Revision > 0 ? FString::Printf(TEXT("Revision: %lld"), V.Revision) : TEXT("No save yet"));
+	if (!bOnline && !V.LastPlayed.IsEmpty())
 	{
-		Info.Add(TEXT("Last played: ") + LastPlayed + (S.LastHostName.IsEmpty() ? TEXT("") : TEXT(" by ") + S.LastHostName));
+		Info.Add(TEXT("Last played: ") + V.LastPlayed + (V.LastHostName.IsEmpty() ? TEXT("") : TEXT(" by ") + V.LastHostName));
 	}
 	InfoText->SetText(FText::FromString(FString::Join(Info, TEXT("   "))));
 
-	// Progress: the helper's notification lines ("Checking shared world...").
-	const bool bBusy = !L.IsIdle() && L.State != TEXT("ERROR") && L.State != TEXT("LEASE_LOST");
-	ProgressText->SetText(FText::FromString(L.IsIdle() ? FString() : L.Message));
-	ProgressText->SetVisibility(L.Message.IsEmpty() || L.IsIdle() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	const FString& L = V.LocalState;
+	const bool bBusy = V.bCreating || (!V.IsLocalIdle() && L != TEXT("ERROR") && L != TEXT("LEASE_LOST"));
+	ProgressText->SetText(FText::FromString(V.LocalMessage));
+	Show(ProgressText, !V.LocalMessage.IsEmpty());
 
-	const bool bError = L.bHasError && (L.State == TEXT("ERROR") || L.State == TEXT("LEASE_LOST") || !L.Error.Message.IsEmpty());
-	FString ErrorMsg = bError ? L.Error.Message : FString();
-	if (bError && !L.Error.BackupPath.IsEmpty())
+	FString ErrorMsg = V.bHasError ? V.ErrorMessage : FString();
+	if (V.bHasError && !V.BackupPath.IsEmpty())
 	{
-		ErrorMsg += TEXT("\nBackup: ") + L.Error.BackupPath;
+		ErrorMsg += TEXT("\nBackup kept at: ") + V.BackupPath;
 	}
 	ErrorText->SetText(FText::FromString(ErrorMsg));
-	ErrorText->SetVisibility(bError ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	Show(ErrorText, V.bHasError);
 
-	TArray<FString> Steps;
-	for (const FSharedWorldStep& Step : L.Steps)
+	FString Detail = FString::Join(V.Steps, TEXT("\n"));
+	if (V.bHasError && !V.ErrorDetail.IsEmpty())
 	{
-		Steps.Add(Step.Message);
+		Detail += TEXT("\n\nDetails: ") + V.ErrorDetail + TEXT(" (") + V.ErrorCode + TEXT(")");
 	}
-	FString Detail = FString::Join(Steps, TEXT("\n"));
-	if (bError && !L.Error.Detail.IsEmpty())
+	if (!V.Problem.IsEmpty())
 	{
-		Detail += TEXT("\n\nDetails: ") + L.Error.Detail;
-	}
-	if (!S.Error.IsEmpty())
-	{
-		Detail += TEXT("\n\nCloud: ") + S.Error;
+		Detail += TEXT("\n\nStorage: ") + V.Problem;
 	}
 	DetailText->SetText(FText::FromString(Detail));
-	DetailText->SetVisibility(bShowDetails && !Detail.IsEmpty() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	Show(DetailText, bShowDetails && !Detail.IsEmpty());
+	Show(DetailRow, bShowDetails, true);
+	HistoryText->SetText(FText::FromString(HistoryCache));
+	Show(HistoryText, bShowDetails && !HistoryCache.IsEmpty());
 
-	// One button decides host vs join; it is disabled while something runs.
-	PlayButton->SetIsEnabled(!bBusy && L.State != TEXT("LEASE_LOST") && S.Status != TEXT("NO_SAVE"));
+	// One button decides host vs join; disabled while something runs.
+	PlayButton->SetIsEnabled(!bBusy && L != TEXT("LEASE_LOST") && V.CloudStatus != TEXT("NO_SAVE") && V.CloudStatus != TEXT("NOT_CREATED"));
 
-	if (L.State == TEXT("WAITING_FOR_HOST") || L.State == TEXT("READY_TO_HOST"))
+	if (L == TEXT("WAITING_FOR_HOST") || L == TEXT("READY_TO_HOST") || L == TEXT("RECONNECTING"))
 	{
 		Secondary = ESecondary::Cancel;
 	}
-	else if (L.State == TEXT("ERROR") && L.bHasError && L.Error.Retryable)
+	else if (L == TEXT("ERROR") && V.bErrorRetryable)
 	{
 		Secondary = ESecondary::Retry;
 	}
-	else if (L.State == TEXT("ERROR") || L.State == TEXT("LEASE_LOST") || L.State == TEXT("JOIN_READY"))
+	else if (L == TEXT("ERROR") || L == TEXT("LEASE_LOST") || L == TEXT("JOIN_READY"))
 	{
 		Secondary = ESecondary::Dismiss;
 	}
@@ -216,7 +227,7 @@ void USharedWorldEntry::Update(const FSharedWorldStatus& S)
 		NSLOCTEXT("SharedWorld", "Retry", "Retry"),
 	};
 	SecondaryLabel->SetText(Labels[static_cast<uint8>(Secondary)]);
-	SecondaryButton->SetVisibility(Secondary == ESecondary::None ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
+	Show(SecondaryButton, Secondary != ESecondary::None, true);
 }
 
 void USharedWorldEntry::OnPlayClicked()
@@ -249,6 +260,50 @@ void USharedWorldEntry::OnDetailsClicked()
 	Update(Current);
 }
 
+void USharedWorldEntry::OnHistoryClicked()
+{
+	USharedWorldSubsystem* SW = GetSharedWorld();
+	if (!SW)
+	{
+		return;
+	}
+	HistoryCache = TEXT("Loading history...");
+	Update(Current);
+	TWeakObjectPtr<USharedWorldEntry> WeakThis(this);
+	SW->FetchHistory(Current.WorldId, 15, [WeakThis](bool bOk, const FString& Message)
+	{
+		if (USharedWorldEntry* Self = WeakThis.Get())
+		{
+			Self->HistoryCache = bOk ? Message + TEXT("\nRestoring makes a NEW revision with that content; nothing is deleted.") : Message;
+			Self->Update(Self->Current);
+		}
+	});
+}
+
+void USharedWorldEntry::OnRestoreClicked()
+{
+	USharedWorldSubsystem* SW = GetSharedWorld();
+	const FString In = RestoreInput ? RestoreInput->GetText().ToString().TrimStartAndEnd().Replace(TEXT("#"), TEXT("")) : FString();
+	if (!SW || !In.IsNumeric())
+	{
+		return;
+	}
+	SW->Restore(Current.WorldId, FCString::Atoi64(*In));
+}
+
+void USharedWorldEntry::OnForgetClicked()
+{
+	if (USharedWorldSubsystem* SW = GetSharedWorld())
+	{
+		const FString Problem = SW->ForgetWorld(Current.WorldId);
+		if (!Problem.IsEmpty())
+		{
+			HistoryCache = Problem;
+			Update(Current);
+		}
+	}
+}
+
 // ---------------------------------------------------------------- panel
 
 TSharedRef<SWidget> USharedWorldPanel::RebuildWidget()
@@ -257,7 +312,7 @@ TSharedRef<SWidget> USharedWorldPanel::RebuildWidget()
 	{
 		// Fixed width, height follows the content.
 		USizeBox* Size = WidgetTree->ConstructWidget<USizeBox>();
-		Size->SetWidthOverride(440.f);
+		Size->SetWidthOverride(460.f);
 		WidgetTree->RootWidget = Size;
 		UBorder* Root = WidgetTree->ConstructWidget<UBorder>();
 		Root->SetBrushColor(SharedWorldStyle::Panel);
@@ -265,13 +320,84 @@ TSharedRef<SWidget> USharedWorldPanel::RebuildWidget()
 		Size->AddChild(Root);
 		UVerticalBox* Col = WidgetTree->ConstructWidget<UVerticalBox>();
 		Root->SetContent(Col);
+
+		UHorizontalBox* HeaderRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+		Col->AddChildToVerticalBox(HeaderRow)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
 		UTextBlock* Header = MakeText(WidgetTree, 20, Orange, true);
 		Header->SetText(NSLOCTEXT("SharedWorld", "Header", "SHARED WORLDS"));
-		Col->AddChildToVerticalBox(Header)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
-		ConnectionText = MakeText(WidgetTree, 11, Muted);
-		Col->AddChildToVerticalBox(ConnectionText);
+		UHorizontalBoxSlot* HeaderSlot = HeaderRow->AddChildToHorizontalBox(Header);
+		HeaderSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		UTextBlock* Unused = nullptr;
+		UButton* Toggle = MakeButton(WidgetTree, Muted, Unused, NSLOCTEXT("SharedWorld", "Setup", "+ Add / Account"));
+		Toggle->OnClicked.AddDynamic(this, &USharedWorldPanel::OnToggleSetup);
+		HeaderRow->AddChildToHorizontalBox(Toggle);
+
+		ProblemText = MakeText(WidgetTree, 11, SharedWorldStyle::Error);
+		Col->AddChildToVerticalBox(ProblemText);
+		EmptyText = MakeText(WidgetTree, 11, Muted);
+		EmptyText->SetText(NSLOCTEXT("SharedWorld", "Empty", "No Shared Worlds yet. Use \"+ Add / Account\" to convert one of your saves or to add a friend's world."));
+		Col->AddChildToVerticalBox(EmptyText);
 		List = WidgetTree->ConstructWidget<UVerticalBox>();
 		Col->AddChildToVerticalBox(List);
+
+		// ---- setup section (collapsed until toggled)
+		UBorder* SetupBorder = WidgetTree->ConstructWidget<UBorder>();
+		SetupBorder->SetBrushColor(Card);
+		SetupBorder->SetPadding(FMargin(12.f));
+		Col->AddChildToVerticalBox(SetupBorder)->SetPadding(FMargin(0.f, 10.f, 0.f, 0.f));
+		UVerticalBox* Setup = WidgetTree->ConstructWidget<UVerticalBox>();
+		SetupBorder->SetContent(Setup);
+		SetupBox = SetupBorder;
+
+		AccountText = MakeText(WidgetTree, 11, Text);
+		Setup->AddChildToVerticalBox(AccountText);
+		UButton* SignIn = MakeButton(WidgetTree, Orange, SignInLabel, FText::GetEmpty());
+		SignIn->OnClicked.AddDynamic(this, &USharedWorldPanel::OnSignInClicked);
+		Setup->AddChildToVerticalBox(SignIn)->SetPadding(FMargin(0.f, 4.f, 0.f, 10.f));
+
+		UTextBlock* StorageLabel = MakeText(WidgetTree, 11, Muted);
+		StorageLabel->SetText(NSLOCTEXT("SharedWorld", "StorageLabel", "Storage: a GitHub repository (owner/repo) or a shared folder path"));
+		Setup->AddChildToVerticalBox(StorageLabel);
+		StorageInput = MakeInput(WidgetTree, NSLOCTEXT("SharedWorld", "StorageHint", "e.g. reece/our-factory-saves"));
+		Setup->AddChildToVerticalBox(StorageInput)->SetPadding(FMargin(0.f, 2.f, 0.f, 10.f));
+
+		UTextBlock* ConvertLabel = MakeText(WidgetTree, 12, Text, true);
+		ConvertLabel->SetText(NSLOCTEXT("SharedWorld", "ConvertLabel", "Convert one of your saves"));
+		Setup->AddChildToVerticalBox(ConvertLabel);
+		SaveNameInput = MakeInput(WidgetTree, NSLOCTEXT("SharedWorld", "SaveHint", "Save name (as shown in Load Game)"));
+		WorldNameInput = MakeInput(WidgetTree, NSLOCTEXT("SharedWorld", "NameHint", "Shared World name"));
+		Setup->AddChildToVerticalBox(SaveNameInput)->SetPadding(FMargin(0.f, 2.f));
+		Setup->AddChildToVerticalBox(WorldNameInput)->SetPadding(FMargin(0.f, 2.f));
+		UHorizontalBox* MembersRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+		MembersOnlyCheck = WidgetTree->ConstructWidget<UCheckBox>();
+		MembersOnlyCheck->SetIsChecked(false);
+		UTextBlock* MembersLabel = MakeText(WidgetTree, 11, Muted);
+		MembersLabel->SetText(NSLOCTEXT("SharedWorld", "MembersOnly", " Members only (otherwise anyone with access to the storage may play)"));
+		MembersRow->AddChildToHorizontalBox(MembersOnlyCheck);
+		MembersRow->AddChildToHorizontalBox(MembersLabel);
+		Setup->AddChildToVerticalBox(MembersRow)->SetPadding(FMargin(0.f, 2.f));
+		UButton* Create = MakeButton(WidgetTree, Orange, Unused, NSLOCTEXT("SharedWorld", "Create", "Create Shared World"));
+		Create->OnClicked.AddDynamic(this, &USharedWorldPanel::OnCreateClicked);
+		Setup->AddChildToVerticalBox(Create)->SetPadding(FMargin(0.f, 4.f, 0.f, 10.f));
+
+		UTextBlock* AddLabel = MakeText(WidgetTree, 12, Text, true);
+		AddLabel->SetText(NSLOCTEXT("SharedWorld", "AddLabel", "Add a friend's Shared World"));
+		Setup->AddChildToVerticalBox(AddLabel);
+		WorldIdInput = MakeInput(WidgetTree, NSLOCTEXT("SharedWorld", "IdHint", "World id (your friend sees it with /sharedworld status)"));
+		Setup->AddChildToVerticalBox(WorldIdInput)->SetPadding(FMargin(0.f, 2.f));
+		UButton* Add = MakeButton(WidgetTree, Orange, Unused, NSLOCTEXT("SharedWorld", "Add", "Add"));
+		Add->OnClicked.AddDynamic(this, &USharedWorldPanel::OnAddClicked);
+		Setup->AddChildToVerticalBox(Add)->SetPadding(FMargin(0.f, 4.f, 0.f, 6.f));
+
+		ResultText = MakeText(WidgetTree, 11, Muted);
+		Setup->AddChildToVerticalBox(ResultText);
+		UTextBlock* Invite = MakeText(WidgetTree, 10, Muted);
+		Invite->SetText(NSLOCTEXT("SharedWorld", "InviteHint",
+			"Friends join your game through the Satisfactory friends list (Steam / Epic) as usual. "
+			"Friends who should be able to host or take over need access to the storage: "
+			"in game, /sharedworld granthost <github-username>."));
+		Setup->AddChildToVerticalBox(Invite)->SetPadding(FMargin(0.f, 8.f, 0.f, 0.f));
+		Show(SetupBox, false);
 	}
 	return Super::RebuildWidget();
 }
@@ -312,11 +438,12 @@ void USharedWorldPanel::Refresh()
 	{
 		return;
 	}
-	const FString Problem = SW->GetConnectionProblem();
-	ConnectionText->SetText(FText::FromString(Problem));
-	ConnectionText->SetVisibility(Problem.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	const FString& Problem = SW->GetSettingsProblem();
+	ProblemText->SetText(FText::FromString(Problem));
+	Show(ProblemText, !Problem.IsEmpty());
 
-	const TArray<FSharedWorldStatus>& Worlds = SW->GetWorlds();
+	const TArray<FSharedWorldEntryView> Worlds = SW->GetWorldViews();
+	Show(EmptyText, Worlds.Num() == 0);
 	if (Entries.Num() != Worlds.Num())
 	{
 		List->ClearChildren();
@@ -332,4 +459,145 @@ void USharedWorldPanel::Refresh()
 	{
 		Entries[i]->Update(Worlds[i]);
 	}
+
+	// Account line. The token itself is never shown or logged.
+	const FSharedWorldSignIn SignIn = SW->GetSignInStatus();
+	const FString Login = SW->GetGitHubLogin();
+	FString Account;
+	if (SignIn.bInProgress && !SignIn.UserCode.IsEmpty())
+	{
+		Account = FString::Printf(TEXT("Open %s in your browser and enter the code:  %s"), *SignIn.VerificationUri, *SignIn.UserCode);
+	}
+	else if (SignIn.bInProgress)
+	{
+		Account = TEXT("Contacting GitHub...");
+	}
+	else if (!Login.IsEmpty())
+	{
+		Account = TEXT("GitHub: signed in as ") + Login + TEXT(" (needed only for GitHub storage)");
+	}
+	else
+	{
+		Account = TEXT("GitHub: not signed in (needed only for worlds stored on GitHub)");
+	}
+	if (!SignIn.Error.IsEmpty())
+	{
+		Account += TEXT("\n") + SignIn.Error;
+	}
+	AccountText->SetText(FText::FromString(Account));
+	SignInLabel->SetText(!Login.IsEmpty() ? NSLOCTEXT("SharedWorld", "SignOut", "Sign out of GitHub") : NSLOCTEXT("SharedWorld", "SignIn", "Sign in with GitHub"));
+}
+
+void USharedWorldPanel::SetResult(bool bOk, const FString& Message)
+{
+	bBusy = false;
+	ResultText->SetText(FText::FromString(Message));
+	ResultText->SetColorAndOpacity(FSlateColor(bOk ? Online : SharedWorldStyle::Error));
+}
+
+bool USharedWorldPanel::ParseStorage(sw::ProviderConfig& Out, FString& OutError) const
+{
+	const FString In = StorageInput->GetText().ToString().TrimStartAndEnd();
+	const bool bPath = In.StartsWith(TEXT("\\\\")) || In.StartsWith(TEXT("/")) || (In.Len() > 2 && In[1] == TEXT(':'));
+	if (bPath)
+	{
+		Out.Kind = sw::ProviderKind::Folder;
+		Out.FolderPath = TCHAR_TO_UTF8(*In);
+	}
+	else
+	{
+		FString Owner, Repo;
+		if (!In.Split(TEXT("/"), &Owner, &Repo) || Owner.IsEmpty() || Repo.IsEmpty())
+		{
+			OutError = TEXT("Enter the storage as owner/repo (GitHub) or a folder path.");
+			return false;
+		}
+		Out.Kind = sw::ProviderKind::GitHub;
+		Out.Owner = TCHAR_TO_UTF8(*Owner);
+		Out.Repo = TCHAR_TO_UTF8(*Repo.Replace(TEXT(".git"), TEXT("")));
+	}
+	if (sw::Status V = Out.Validate(); !V)
+	{
+		OutError = UTF8_TO_TCHAR(V.Err().Message.c_str());
+		return false;
+	}
+	return true;
+}
+
+void USharedWorldPanel::OnToggleSetup()
+{
+	Show(SetupBox, SetupBox->GetVisibility() == ESlateVisibility::Collapsed, true);
+	Refresh();
+}
+
+void USharedWorldPanel::OnSignInClicked()
+{
+	USharedWorldSubsystem* SW = GetSharedWorld();
+	if (!SW)
+	{
+		return;
+	}
+	if (!SW->GetGitHubLogin().IsEmpty())
+	{
+		SW->SignOutOfGitHub();
+	}
+	else
+	{
+		SW->BeginGitHubSignIn();
+	}
+	Refresh();
+}
+
+void USharedWorldPanel::OnCreateClicked()
+{
+	USharedWorldSubsystem* SW = GetSharedWorld();
+	if (!SW || bBusy)
+	{
+		return;
+	}
+	sw::ProviderConfig Provider;
+	FString Error;
+	if (!ParseStorage(Provider, Error))
+	{
+		SetResult(false, Error);
+		return;
+	}
+	bBusy = true;
+	ResultText->SetText(NSLOCTEXT("SharedWorld", "Creating", "Uploading your save as revision 1..."));
+	TWeakObjectPtr<USharedWorldPanel> WeakThis(this);
+	SW->CreateWorldFromSave(WorldNameInput->GetText().ToString(), SaveNameInput->GetText().ToString().TrimStartAndEnd(), Provider,
+		MembersOnlyCheck->IsChecked(), [WeakThis](bool bOk, const FString& Message)
+	{
+		if (USharedWorldPanel* Self = WeakThis.Get())
+		{
+			Self->SetResult(bOk, Message);
+		}
+	});
+}
+
+void USharedWorldPanel::OnAddClicked()
+{
+	USharedWorldSubsystem* SW = GetSharedWorld();
+	if (!SW || bBusy)
+	{
+		return;
+	}
+	sw::ProviderConfig Provider;
+	FString Error;
+	if (!ParseStorage(Provider, Error))
+	{
+		SetResult(false, Error);
+		return;
+	}
+	bBusy = true;
+	ResultText->SetText(NSLOCTEXT("SharedWorld", "Checking", "Checking the world..."));
+	TWeakObjectPtr<USharedWorldPanel> WeakThis(this);
+	const FString Id = WorldIdInput->GetText().ToString().TrimStartAndEnd();
+	SW->AddExistingWorld(Id, Id, Provider, [WeakThis](bool bOk, const FString& Message)
+	{
+		if (USharedWorldPanel* Self = WeakThis.Get())
+		{
+			Self->SetResult(bOk, Message);
+		}
+	});
 }
