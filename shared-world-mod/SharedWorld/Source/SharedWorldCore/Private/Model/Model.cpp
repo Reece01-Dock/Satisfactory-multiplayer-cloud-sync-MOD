@@ -134,7 +134,8 @@ namespace sw
 	std::string RevisionMeta::Path() const
 	{
 		char Buf[96];
-		std::snprintf(Buf, sizeof(Buf), "revisions/%08lld-g%08lld-%.8s.json", static_cast<long long>(Number),
+		// Sharded by thousands: GitHub recommends <= 3000 entries per directory.
+		std::snprintf(Buf, sizeof(Buf), "revisions/%04lld/%08lld-g%08lld-%.8s.json", static_cast<long long>(Number / 1000), static_cast<long long>(Number),
 			static_cast<long long>(Generation), ObjectSha256.c_str());
 		return Buf;
 	}

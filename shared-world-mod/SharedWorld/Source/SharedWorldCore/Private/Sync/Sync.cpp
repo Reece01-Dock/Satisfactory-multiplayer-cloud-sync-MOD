@@ -441,22 +441,30 @@ namespace sw
 	Result<std::vector<RevisionMeta>> SyncEngine::History(const std::string& CommitId, size_t Max)
 	{
 		IWorldRepository& Repo = Leases->Store().Repository();
-		std::vector<std::string> Names;
-		SW_ASSIGN(Names, Repo.ListDirectory(CommitId, Paths::RevisionsDir));
-		// File names start with the zero-padded revision number: sort descending.
-		std::sort(Names.begin(), Names.end(), std::greater<>());
+		std::vector<std::string> Shards;
+		SW_ASSIGN(Shards, Repo.ListDirectory(CommitId, Paths::RevisionsDir));
+		// Shard and file names are zero-padded: descending sort = newest first.
+		std::sort(Shards.begin(), Shards.end(), std::greater<>());
 		std::vector<RevisionMeta> Out;
-		for (const std::string& N : Names)
+		for (const std::string& Shard : Shards)
 		{
 			if (Out.size() >= Max) break;
-			std::string Text;
-			SW_ASSIGN(Text, Repo.ReadFile(CommitId, std::string(Paths::RevisionsDir) + "/" + N));
-			json::Value V;
-			SW_ASSIGN(V, json::Parse(Text));
-			RevisionMeta R;
-			SW_ASSIGN(R, RevisionMeta::FromJson(V));
-			if (R.Path() != std::string(Paths::RevisionsDir) + "/" + N) return MakeError(ErrorCode::Invalid, "revision file name does not match its content: " + N);
-			Out.push_back(std::move(R));
+			const std::string ShardDir = std::string(Paths::RevisionsDir) + "/" + Shard;
+			std::vector<std::string> Names;
+			SW_ASSIGN(Names, Repo.ListDirectory(CommitId, ShardDir));
+			std::sort(Names.begin(), Names.end(), std::greater<>());
+			for (const std::string& N : Names)
+			{
+				if (Out.size() >= Max) break;
+				std::string Text;
+				SW_ASSIGN(Text, Repo.ReadFile(CommitId, ShardDir + "/" + N));
+				json::Value V;
+				SW_ASSIGN(V, json::Parse(Text));
+				RevisionMeta R;
+				SW_ASSIGN(R, RevisionMeta::FromJson(V));
+				if (R.Path() != ShardDir + "/" + N) return MakeError(ErrorCode::Invalid, "revision file name does not match its content: " + N);
+				Out.push_back(std::move(R));
+			}
 		}
 		return Out;
 	}

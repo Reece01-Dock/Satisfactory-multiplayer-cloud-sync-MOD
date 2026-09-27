@@ -79,7 +79,7 @@ SW_TEST(Model_StateRoundTripAndValidation)
 	ASSERT_OK(Back);
 	EXPECT_EQ(EncodeState(*Back), EncodeState(S));
 	EXPECT_EQ(Back->CurrentLease->Join->Data, std::string("EOS:abc"));
-	EXPECT_EQ(R.Path(), std::string("revisions/00000005-g00000003-") + R.ObjectSha256.substr(0, 8) + ".json");
+	EXPECT_EQ(R.Path(), std::string("revisions/0000/00000005-g00000003-") + R.ObjectSha256.substr(0, 8) + ".json");
 	EXPECT_ERR(DecodeState(EncodeState(S), "other-world"), ErrorCode::Invalid);
 }
 
@@ -154,6 +154,15 @@ SW_TEST(Repository_ContractBasics)
 		auto L = R->ListDirectory(*C2, "revisions");
 		ASSERT_OK(L);
 		EXPECT_EQ(L->size(), size_t(1));
+		// Subdirectories are listed too.
+		auto C2b = R->Commit(*C2, {{"revisions/0001/x.json", std::string("r")}, {"revisions/0001/y.json", std::string("r")}}, "nested");
+		ASSERT_OK(C2b);
+		auto L2 = R->ListDirectory(*C2b, "revisions");
+		ASSERT_OK(L2);
+		EXPECT_EQ(L2->size(), size_t(2)); // the file and the "0001" directory
+		auto L3 = R->ListDirectory(*C2b, "revisions/0001");
+		EXPECT_EQ(L3->size(), size_t(2));
+		C2 = C2b;
 		// Stale expected head -> Conflict, nothing written.
 		EXPECT_ERR(R->Commit(*C1, {{"state/current.json", std::string("stale")}}, "stale"), ErrorCode::Conflict);
 		EXPECT_EQ(R->ReadFile(R->Head().Value(), "state/current.json").Value(), std::string("v2"));
@@ -163,7 +172,7 @@ SW_TEST(Repository_ContractBasics)
 		EXPECT_ERR(R->ReadFile(*C3, "state/current.json"), ErrorCode::NotFound);
 		auto Log = R->Log(*C3, 10);
 		ASSERT_OK(Log);
-		EXPECT_EQ(Log->size(), size_t(3));
+		EXPECT_EQ(Log->size(), size_t(4));
 		EXPECT_EQ((*Log)[0].Message, std::string("delete"));
 		// Hostile paths.
 		EXPECT_ERR(R->Commit(*C3, {{"../escape", std::string("x")}}, "x"), ErrorCode::Invalid);

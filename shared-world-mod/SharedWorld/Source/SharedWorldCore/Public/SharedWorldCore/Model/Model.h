@@ -5,7 +5,7 @@
 //   state/current.json    WorldState     THE authoritative document (CAS domain)
 //   state/players.json    PlayerList
 //   state/settings.json   WorldSettings
-//   revisions/<file>.json RevisionMeta   immutable, one per accepted revision
+//   revisions/<shard>/<file>.json RevisionMeta  immutable, one per accepted revision
 //
 // Everything decoded from a repository is validated before use; invalid
 // remote data is an error, never "best effort".
@@ -68,7 +68,7 @@ namespace sw
 		std::string GameBuild;
 		std::string ModVersion;
 
-		/** revisions/00000152-g00000027-3f2a1c9e.json (unique even for orphaned attempts). */
+		/** revisions/0000/00000152-g00000027-3f2a1c9e.json (sharded by thousands). */
 		std::string Path() const;
 		json::Value ToJson() const;
 		static Result<RevisionMeta> FromJson(const json::Value& V);

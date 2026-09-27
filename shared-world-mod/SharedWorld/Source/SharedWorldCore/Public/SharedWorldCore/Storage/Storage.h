@@ -45,7 +45,7 @@ namespace sw
 		virtual Result<std::string> Head() = 0;
 		/** File content at CommitId; NotFound if the file does not exist there. */
 		virtual Result<std::string> ReadFile(const std::string& CommitId, const std::string& Path) = 0;
-		/** Entry names directly inside Dir at CommitId (empty if Dir is missing). */
+		/** Names of files AND subdirectories directly inside Dir at CommitId (empty if Dir is missing). */
 		virtual Result<std::vector<std::string>> ListDirectory(const std::string& CommitId, const std::string& Dir) = 0;
 		/**
 		 * Atomically applies Changes as one commit on top of ExpectedHead

@@ -85,10 +85,9 @@ namespace sw
 		const std::string Prefix = Dir + "/";
 		for (const auto& [P, _] : C.Files)
 		{
-			if (P.compare(0, Prefix.size(), Prefix) == 0 && P.find('/', Prefix.size()) == std::string::npos)
-			{
-				Out.push_back(P.substr(Prefix.size()));
-			}
+			if (P.compare(0, Prefix.size(), Prefix) != 0) continue;
+			const std::string Child = P.substr(Prefix.size(), P.find('/', Prefix.size()) - Prefix.size());
+			if (Out.empty() || Out.back() != Child) Out.push_back(Child); // map order keeps children adjacent
 		}
 		return Out;
 	}
