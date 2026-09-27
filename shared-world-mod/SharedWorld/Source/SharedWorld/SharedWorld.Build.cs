@@ -1,4 +1,3 @@
-using System.IO;
 using UnrealBuildTool;
 
 public class SharedWorld : ModuleRules
@@ -9,11 +8,13 @@ public class SharedWorld : ModuleRules
 		DefaultBuildSettings = BuildSettingsVersion.Latest;
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		bLegacyPublicIncludePaths = false;
+		bEnableExceptions = false; // SharedWorldCore is exception-free; keep the boundary honest
 
 		PublicDependencyModuleNames.AddRange(new[] {
 			"Core", "CoreUObject", "Engine", "InputCore",
 			"SlateCore", "Slate", "UMG",
 			"FactoryGame", "SML",
+			"SharedWorldCore",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new[] {
@@ -23,12 +24,12 @@ public class SharedWorld : ModuleRules
 			"ModelViewViewModel", "FieldNotification",
 		});
 
-		// Ship the helper executable with the mod. It is started automatically
-		// by USharedWorldIPCClient when no helper is running.
-		string HelperExe = Path.Combine(PluginDirectory, "ThirdParty", "SharedWorldHelper", "Win64", "shared-world-helper.exe");
-		if (Target.Platform == UnrealTargetPlatform.Win64 && File.Exists(HelperExe))
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			RuntimeDependencies.Add(HelperExe);
+			// Windows Credential Manager (CredWriteW / CredReadW / CredDeleteW):
+			// where signed-in GitHub tokens are stored. Never in the save, never
+			// in SharedWorldCore (which has no OS or UE dependency at all).
+			PublicSystemLibraries.Add("Advapi32.lib");
 		}
 	}
 }

@@ -2,23 +2,48 @@
 
 #include "Containers/Ticker.h"
 #include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h" // ENetworkFailure
+#include "SharedWorldCore/App/LocalSettings.h"
+#include "SharedWorldCore/Providers/GitHubAuth.h"
+#include "SharedWorldCore/World/WorldSession.h"
 #include "SharedWorldTypes.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "SharedWorldSubsystem.generated.h"
 
-class USharedWorldIPCClient;
 class USharedWorldHostController;
 class USharedWorldJoinManager;
-class FJsonObject;
+class UNetDriver;
 
 DECLARE_MULTICAST_DELEGATE(FOnSharedWorldChanged);
 
+/** Everything needed to run one configured world: its own storage, lease manager and session. */
+struct FSharedWorldRuntime
+{
+	sw::WorldEntry Entry;
+	std::shared_ptr<sw::IWorldRepository> Repository;
+	std::shared_ptr<sw::IObjectStore> Objects;
+	std::shared_ptr<sw::LeaseManager> Leases;
+	std::shared_ptr<sw::SyncEngine> Sync;
+	TUniquePtr<sw::WorldSession> Session;
+	/** Refreshed on a background thread; read under USharedWorldSubsystem::SummaryMutex. */
+	sw::WorldSummary LastSummary;
+};
+
+/** State of an in-progress "sign in with GitHub" device-flow attempt. */
+struct FSharedWorldSignIn
+{
+	bool bInProgress = false;
+	FString UserCode;
+	FString VerificationUri;
+	FString Error;
+	bool bDone = false;
+};
+
 /**
- * The mod's single coordinator. It polls the helper for world status and the
- * local session, and reacts to session states by driving the game:
- *   READY_TO_HOST -> host controller loads the verified save
- *   JOIN_READY    -> join manager joins the published session
- * It never decides HOST vs JOIN itself; that is the helper's job.
+ * The mod's single coordinator. It runs SharedWorldCore natively in-process
+ * (no helper, no local server): one sw::WorldSession per configured world,
+ * ticked from the game thread, driving the game when a session reaches
+ * READY_TO_HOST / JOIN_READY / MIGRATING.
  */
 UCLASS()
 class SHAREDWORLD_API USharedWorldSubsystem : public UGameInstanceSubsystem
@@ -29,64 +54,86 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** Latest status of every configured shared world. */
-	const TArray<FSharedWorldStatus>& GetWorlds() const { return Worlds; }
-	/** Non-empty when the helper cannot be reached; shown instead of the world list. */
-	FString GetConnectionProblem() const;
-	/** Fired whenever world status or a local session changes. */
+	/** Snapshot for the main-menu panel, safe to call every frame. */
+	TArray<FSharedWorldEntryView> GetWorldViews();
 	FOnSharedWorldChanged OnChanged;
 
 	/** The "Play Shared World" button. */
 	void Play(const FString& WorldId);
-	/** Dismiss an error or a finished join decision. */
 	void Dismiss(const FString& WorldId);
-	/** Cancel waiting for a host, or cancel hosting before the world loaded. */
 	void Cancel(const FString& WorldId);
+	void Restore(const FString& WorldId, int64 Revision);
+	void RequestMigrationTo(const FString& WorldId, const FString& SuccessorPlayerId);
 
-	/** In-game host controls (chat command). Return a message for the player. */
+	/** Adds a world backed by an existing GitHub repository (owner/repo already created). */
+	FString AddExistingGitHubWorld(const FString& WorldId, const FString& DisplayName, const FString& Owner, const FString& Repo);
+	/** Converts the local save at SavePath into a brand-new Shared World. */
+	FString CreateWorldFromSave(const FString& WorldId, const FString& DisplayName, const FString& SourceSavePath,
+		const FString& Owner, const FString& Repo, bool bRestrictToMembers);
+	std::vector<sw::WorldEntry> GetConfiguredWorlds() const { return Settings.Worlds; }
+	/** Non-empty when the local world list could not be loaded (shown above the list). */
+	const FString& GetSettingsProblem() const { return SettingsProblem; }
+
+	// ---- GitHub sign-in (device flow)
+	void BeginGitHubSignIn();
+	FSharedWorldSignIn GetSignInStatus() const;
+	FString GetGitHubLogin() const { return UTF8_TO_TCHAR(Settings.GitHubLogin.c_str()); }
+	void SignOutOfGitHub();
+
+	// ---- chat command surface (see SharedWorldChatCommand)
 	FString RequestCheckpoint();
 	FString RequestStop();
 	FString DescribeActiveSession() const;
+	FString DescribeHistory(const FString& WorldId, int32 MaxCount);
+	FString InvitePlayer(const FString& WorldId, const FString& GitHubUsername);
+	FString RecentLog(int32 MaxLines) const;
 
 	/** Lifecycle notifications from the SML world modules. */
 	void OnMenuWorldReady(UWorld* World);
 	void OnGameWorldReady(UWorld* World);
 
-	/** Used by the host controller to report game events to the helper. */
-	void SendSessionEvent(const FString& WorldId, const FString& Event, const TSharedPtr<FJsonObject>& Body,
-		TFunction<void(bool /*bOk*/, int32 /*HttpCode*/)> OnDone = nullptr);
-
-	USharedWorldIPCClient* GetIPC() const { return IPC; }
-
 private:
+	FSharedWorldRuntime* FindOrCreateRuntime(const sw::WorldEntry& Entry);
+	FSharedWorldRuntime* FindRuntime(const FString& WorldId);
+	sw::Identity MyIdentity() const;
+	sw::ProviderEnvironment MakeEnvironment() const;
+	void SaveSettings();
+
 	bool Tick(float DeltaTime);
-	void PollWorlds();
-	void SendKeepalives();
-	void HandleSession(const FSharedWorldSession& Session);
+	void RefreshSummariesAsync();
+	void HandleSessionTransition(FSharedWorldRuntime& Runtime);
+	void OnNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
 	void OnWorldBeginTearDown(UWorld* World);
-	TSharedPtr<FJsonObject> MakePlayRequest() const;
-	const FSharedWorldStatus* FindWorld(const FString& WorldId) const;
 
-	static bool ParseSession(const TSharedPtr<FJsonObject>& Json, FSharedWorldSession& Out);
-	static bool ParseStatus(const TSharedPtr<FJsonObject>& Json, FSharedWorldStatus& Out);
+	sw::LocalSettings Settings;
+	std::shared_ptr<sw::IHttpClient> Http;
+	std::shared_ptr<sw::ICredentialStore> Credentials;
+	std::shared_ptr<sw::ILogSink> LogSink;
+	std::shared_ptr<sw::MemoryLogSink> DiagnosticsSink; // last N lines for the diagnostics command
+	FString SettingsPath;
+	bool bSettingsReadOnly = false;
+	FString SettingsProblem;
 
-	UPROPERTY()
-	TObjectPtr<USharedWorldIPCClient> IPC;
+	TMap<FString, TUniquePtr<FSharedWorldRuntime>> Runtimes;
+	mutable FCriticalSection SummaryMutex;
+	TMap<FString, FString> LastLocalStates; // edge-detection for HandleSessionTransition
+	TSet<FString> JoinsStarted;
+	bool bSummaryRefreshInFlight = false;
+
 	UPROPERTY()
 	TObjectPtr<USharedWorldHostController> Host;
 	UPROPERTY()
 	TObjectPtr<USharedWorldJoinManager> Joiner;
 
-	TArray<FSharedWorldStatus> Worlds;
-	/** Last session state seen per world, to act on transitions exactly once. */
-	TMap<FString, FString> LastStates;
-	/** Join attempts already started, keyed by world + host generation. */
-	TSet<FString> JoinsStarted;
+	/** The world currently being hosted or joined (only one game world at a time). */
+	FString ActiveWorldId;
+
+	mutable FCriticalSection SignInMutex;
+	FSharedWorldSignIn SignIn;
 
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle TearDownHandle;
-	double LastPoll = 0.0;
-	double LastKeepalive = 0.0;
-	bool bPollInFlight = false;
+	FDelegateHandle NetworkFailureHandle;
 	TWeakObjectPtr<UWorld> MenuWorld;
+	double LastSummaryRefresh = 0.0;
 };
