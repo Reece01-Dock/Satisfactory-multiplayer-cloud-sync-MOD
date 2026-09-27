@@ -41,6 +41,7 @@ file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp
 add_executable(sw_tests ${TEST_SOURCES})
 target_compile_options(sw_tests PRIVATE ${SW_FLAGS})
 target_link_libraries(sw_tests PRIVATE SharedWorldCore ${SW_LINK})
+target_compile_definitions(sw_tests PRIVATE SW_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/testdata")
 
 enable_testing()
 add_test(NAME sw_tests COMMAND sw_tests)
