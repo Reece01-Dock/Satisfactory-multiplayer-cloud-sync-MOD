@@ -1,0 +1,32 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"SemVersion": "0.1.0",
+	"GameVersion": ">=491125",
+	"FriendlyName": "Shared World",
+	"Description": "Play one shared multiplayer world with friends. Press Play Shared World: it joins the friend who is hosting, or downloads the latest save and hosts.",
+	"Category": "Modding",
+	"CreatedBy": "Shared World contributors",
+	"CreatedByURL": "https://github.com/Reece01-Dock/Satisfactory-multiplayer-cloud-sync-MOD",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"RequiredOnRemote": true,
+	"RemoteVersionRange": ">=0.1.0 <0.2.0",
+	"Modules": [
+		{
+			"Name": "SharedWorld",
+			"Type": "Runtime",
+			"LoadingPhase": "PostDefault",
+			"TargetDenyList": [ "Server" ]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SML",
+			"Enabled": true,
+			"SemVersion": "^3.12.0"
+		}
+	]
+}
