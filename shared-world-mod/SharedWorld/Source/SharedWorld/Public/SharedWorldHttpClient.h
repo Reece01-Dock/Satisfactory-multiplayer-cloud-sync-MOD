@@ -9,9 +9,9 @@
  * ticked on the game thread by the engine, so blocking a worker thread here
  * does not stall requests in flight.
  *
- * Never follows redirects (SharedWorldCore::IHttpClient contract): the
- * provider layer resolves them explicitly so the Authorization header is
- * never forwarded to another host (e.g. a release-asset storage redirect).
+ * Redirects: the providers do not depend on whether the backend follows
+ * them (see the .cpp). Whether the game's libcurl forwards Authorization
+ * across hosts is a runtime-validation item in STATUS.md.
  */
 class FSharedWorldHttpClient final : public sw::IHttpClient
 {

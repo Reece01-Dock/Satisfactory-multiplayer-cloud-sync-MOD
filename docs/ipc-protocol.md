@@ -1,5 +1,9 @@
 # Helper IPC protocol (API version 1)
 
+> **Legacy.** This describes the helper-based design, superseded by the in-mod
+> architecture in `native-architecture.md`. Kept because `shared-world-helper/`
+> remains the reference implementation and test oracle.
+
 Transport: HTTP/1.1 on `127.0.0.1:<port>`, JSON bodies.
 
 Discovery: the helper writes `<data>/discovery.json` (Windows:

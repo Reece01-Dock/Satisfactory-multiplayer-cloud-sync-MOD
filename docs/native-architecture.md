@@ -239,6 +239,28 @@ secondary limit; revisions every 10 min add 18/hour.
   `SatisfactorySharedWorld:github`); never in the save, repo, logs or UI.
 * Filesystem provider needs no credentials.
 
+### 8.1 Steam / Epic vs storage access (decided)
+
+Playing and hosting need different things:
+
+* **Joining a live game** uses the game's own Steam/Epic sessions. The host
+  publishes its online session id in the world state; friends can equally
+  join through the friends list. No storage access is needed to play as a
+  client.
+* **Identity, members and roles** are Steam/Epic account ids
+  (`players.json`). The host manages them in game (`/sharedworld allow |
+  remove | open | restrict`) — nobody types a GitHub name to play.
+* **Hosting or taking over** needs write access to the storage, because the
+  host commits the lease and revisions there. Steam Remote Storage and EOS
+  Player Data are per-user, EOS Title Storage is read-only, and none offer
+  compare-and-swap, so they cannot hold the lease. For GitHub storage the
+  owner grants hosting with `/sharedworld granthost <github-user>` (a
+  collaborator invite, the provider's real access boundary). Sharing a
+  token instead is refused: it would put a credential in other people's
+  hands.
+* A client that quits to the menu stops following the world
+  (`OnLeftAsClient`), so a player never becomes host in the background.
+
 ## 9. Directory structure
 
 ```

@@ -1,5 +1,9 @@
 # Architecture
 
+> **Legacy.** This describes the helper-based design, superseded by the in-mod
+> architecture in `native-architecture.md`. Kept because `shared-world-helper/`
+> remains the reference implementation and test oracle.
+
 ```
  Satisfactory (per player)                         Helper (per player)                      Cloud storage (shared)
 ┌──────────────────────────────┐   HTTP 127.0.0.1   ┌───────────────────────────────┐      ┌──────────────────────────────┐

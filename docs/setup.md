@@ -1,70 +1,58 @@
 # Setup (development preview)
 
-This is a development preview. The helper is tested; the mod compiles only
-in an SML development environment and has not been run in game yet (see
-`STATUS.md`). **Back up your saves before trying it.**
+The core is tested; the Unreal module has not been compiled or run in game
+yet (see `STATUS.md`). **Back up your saves before trying it.**
 
-## 1. Build the helper
+## Build
 
-Requires Go 1.22+.
+1. Set up the SML 3.12 starter project (Satisfactory Modding docs).
+2. Copy `shared-world-mod/SharedWorld/` into the project's `Mods/` folder.
+   It contains two modules: `SharedWorldCore` (pure C++, zlib) and
+   `SharedWorld` (the SML mod).
+3. Build and package with Alpakit as usual.
 
-```sh
-cd shared-world-helper
-go test -race ./...                       # unit, race and end-to-end tests
-./scripts/smoke-two-helpers.sh            # two real helper processes, HOST/JOIN over HTTP
-GOOS=windows GOARCH=amd64 go build -o ../shared-world-mod/SharedWorld/ThirdParty/SharedWorldHelper/Win64/shared-world-helper.exe ./cmd/shared-world-helper
+Core tests (no Unreal needed):
+
+```
+cmake -S shared-world-mod/core-tests -B build -G Ninja
+cmake --build build && ./build/sw_tests
 ```
 
-## 2. Configure the helper
+## GitHub storage
 
-Create `%LOCALAPPDATA%\SatisfactorySharedWorld\config.json`:
+1. The mod's release build needs a GitHub OAuth App with **device flow
+   enabled**; put its client id in `GitHubClientId`
+   (`SharedWorldSubsystem.cpp`). No client secret is used or shipped.
+2. Create a (private) repository for your worlds, e.g. `you/our-saves`.
+   It may be empty; the mod initialises it. Each world lives on its own
+   branch `shared-world/<world-id>`; saves are release assets.
+3. In the main menu: **+ Add / Account → Sign in with GitHub**, open the
+   shown address and enter the code. The token goes to Windows Credential
+   Manager, never into settings, saves or the repository.
+4. Enter the storage (`you/our-saves`), your save's name and a world name,
+   then **Create Shared World**. Your original save is not changed.
 
-```json
-{
-  "schemaVersion": 1,
-  "provider": { "type": "filesystem", "root": "D:\\SharedWorlds" },
-  "worlds": [ { "id": "our-factory", "name": "Our Factory" } ]
-}
-```
+## Friends
 
-Optional keys: `lease.ttlSeconds` (90), `lease.heartbeatSeconds` (20, at
-most a third of the TTL), `lease.skewGraceSeconds` (30),
-`keepLocalBackups` (20; conflict backups are never pruned), `ipcPort`
-(0 = random). An `installId` is generated on first start.
+* To **play**, friends join your game through the Satisfactory friends
+  list (Steam or Epic) — or, if they have added the world, with **Play
+  Shared World**.
+* To be able to **host** (and take over if you crash), they need write
+  access to the storage: in game, `/sharedworld granthost <their-github-name>`,
+  then they accept GitHub's invitation, sign in in the mod and add the world
+  with its id (`/sharedworld status` shows it).
+* Members-only worlds: `/sharedworld restrict`, then
+  `/sharedworld allow <player> [member|admin|viewer]` while they are connected.
 
-> **Filesystem provider limits.** It is safe for several helpers on one
-> machine and for a real network share with working exclusive-create
-> semantics. It is **not** safe on a folder replicated by Google Drive /
-> OneDrive / Dropbox desktop clients: those replicate eventually, so two
-> PCs can both acquire the world. Cloud providers with native conditional
-> writes are the next milestone (docs/research.md §6).
+## Folder storage
 
-Other files in that directory: `discovery.json` (port + token for the mod),
-`logs/helper.log` (JSON lines), `state/` (per-world sync state),
-`backups/<world>/` (local backups and conflict copies), `staging/`.
+Instead of `owner/repo`, enter an absolute folder path: a local folder or a
+real network share (SMB/NFS). **Never** use a Google Drive / OneDrive /
+Dropbox sync folder: those replicate files without atomic rename or
+locking, which breaks the host lock.
 
-## 3. Create the shared world (once)
+## Files on your PC
 
-With the helper running, from a save that already exists in your save directory:
-
-```sh
-curl -X POST -H "Authorization: Bearer <token from discovery.json>" \
-  -d '{"worldId":"our-factory","worldName":"Our Factory","importSaveName":"MyExistingSave",
-       "playerId":"me","displayName":"Me","platform":"steam",
-       "saveDirectory":"C:\\Users\\me\\AppData\\Local\\FactoryGame\\Saved\\SaveGames\\<id>","gamePid":0}' \
-  http://127.0.0.1:<port>/v1/worlds
-```
-
-(An in-game "Create shared world" flow is part of Milestone 10.)
-
-## 4. Build the mod
-
-1. Set up the SML starter project for SML 3.12 / the current game build
-   (docs.ficsit.app → Development → Getting started).
-2. Copy `shared-world-mod/SharedWorld` into the project's `Mods/` folder.
-3. Build the helper into `SharedWorld/ThirdParty/SharedWorldHelper/Win64/` (step 1).
-4. Package with Alpakit and install as usual.
-
-In game: the **Shared Worlds** panel appears on the main menu. In a hosted
-shared world, `/sharedworld save` uploads a checkpoint and
-`/sharedworld stop` saves, uploads and releases the world.
+`%LOCALAPPDATA%\SatisfactorySharedWorld\`: `settings.json` (world list, no
+secrets), `install-id`, and `worlds/<id>/` (sync state, verified object
+cache, backups — conflict and recovery backups are never pruned).

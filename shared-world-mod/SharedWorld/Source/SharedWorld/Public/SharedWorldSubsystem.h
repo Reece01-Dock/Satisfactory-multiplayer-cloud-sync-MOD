@@ -1,10 +1,14 @@
 #pragma once
 
+#include <atomic>
+#include <memory>
+
 #include "Containers/Ticker.h"
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h" // ENetworkFailure
 #include "SharedWorldCore/App/LocalSettings.h"
 #include "SharedWorldCore/Providers/GitHubAuth.h"
+#include "SharedWorldCore/Util/TaskQueue.h"
 #include "SharedWorldCore/World/WorldSession.h"
 #include "SharedWorldTypes.h"
 #include "Subsystems/GameInstanceSubsystem.h"
@@ -25,6 +29,8 @@ struct FSharedWorldRuntime
 	std::shared_ptr<sw::LeaseManager> Leases;
 	std::shared_ptr<sw::SyncEngine> Sync;
 	TUniquePtr<sw::WorldSession> Session;
+	/** Set while CreateWorldFromSave runs: Play is refused. */
+	bool bCreating = false;
 	/** Refreshed on a background thread; read under USharedWorldSubsystem::SummaryMutex. */
 	sw::WorldSummary LastSummary;
 };
@@ -63,14 +69,37 @@ public:
 	void Dismiss(const FString& WorldId);
 	void Cancel(const FString& WorldId);
 	void Restore(const FString& WorldId, int64 Revision);
-	void RequestMigrationTo(const FString& WorldId, const FString& SuccessorPlayerId);
+	/** Planned migration to a connected player (name or id). Returns a player message. */
+	FString RequestMigrationTo(const FString& WorldId, const FString& Who);
 
-	/** Adds a world backed by an existing GitHub repository (owner/repo already created). */
-	FString AddExistingGitHubWorld(const FString& WorldId, const FString& DisplayName, const FString& Owner, const FString& Repo);
-	/** Converts the local save at SavePath into a brand-new Shared World. */
-	FString CreateWorldFromSave(const FString& WorldId, const FString& DisplayName, const FString& SourceSavePath,
-		const FString& Owner, const FString& Repo, bool bRestrictToMembers);
+	/** Result of a background operation, delivered on the game thread. */
+	using FDone = TFunction<void(bool bOk, const FString& Message)>;
+
+	/** Adds a world that already exists in Provider (verified before it is listed). */
+	void AddExistingWorld(const FString& WorldId, const FString& DisplayName, const sw::ProviderConfig& Provider, FDone OnDone);
+	/** Converts the local save SaveName (in the game's save directory) into a new Shared World. The original save is not modified. */
+	void CreateWorldFromSave(const FString& DisplayName, const FString& SaveName, const sw::ProviderConfig& Provider, bool bRestrictToMembers, FDone OnDone);
+	/** Removes the world from this PC's list only. Refused while a session for it is active. */
+	FString ForgetWorld(const FString& WorldId);
 	std::vector<sw::WorldEntry> GetConfiguredWorlds() const { return Settings.Worlds; }
+
+	// ---- history / players (background; results as player-facing text)
+	void FetchHistory(const FString& WorldId, int32 MaxCount, FDone OnDone);
+	void FetchPlayers(const FString& WorldId, FDone OnDone);
+	/**
+	 * Membership is keyed by the game's Steam/Epic account ids: Who is a
+	 * connected player's name or id (host), or a raw player id.
+	 */
+	void AllowPlayer(const FString& WorldId, const FString& Who, sw::Role Role, FDone OnDone);
+	void RemovePlayer(const FString& WorldId, const FString& Who, FDone OnDone);
+	void SetOpenMembership(const FString& WorldId, bool bOpen, FDone OnDone);
+	/**
+	 * Hosting needs write access to the world's storage, which Steam/Epic
+	 * cannot grant: for GitHub storage this invites the friend's GitHub
+	 * account as a collaborator. Players without it can still join games.
+	 */
+	void GrantHosting(const FString& WorldId, const FString& GitHubUsername, FDone OnDone);
+
 	/** Non-empty when the local world list could not be loaded (shown above the list). */
 	const FString& GetSettingsProblem() const { return SettingsProblem; }
 
@@ -84,8 +113,8 @@ public:
 	FString RequestCheckpoint();
 	FString RequestStop();
 	FString DescribeActiveSession() const;
-	FString DescribeHistory(const FString& WorldId, int32 MaxCount);
-	FString InvitePlayer(const FString& WorldId, const FString& GitHubUsername);
+	/** The world being hosted or joined, else "" (chat commands default to it). */
+	const FString& GetActiveWorldId() const { return ActiveWorldId; }
 	FString RecentLog(int32 MaxLines) const;
 
 	/** Lifecycle notifications from the SML world modules. */
@@ -95,15 +124,22 @@ public:
 private:
 	FSharedWorldRuntime* FindOrCreateRuntime(const sw::WorldEntry& Entry);
 	FSharedWorldRuntime* FindRuntime(const FString& WorldId);
+	sw::WorldSession& EnsureSession(FSharedWorldRuntime& Runtime);
 	sw::Identity MyIdentity() const;
 	sw::ProviderEnvironment MakeEnvironment() const;
+	sw::LocalVersions MyVersions() const;
 	void SaveSettings();
+	/** Runs Work on the background queue; Then runs on the game thread if the subsystem still exists. */
+	void RunInBackground(TFunction<TPair<bool, FString>()> Work, TFunction<void(USharedWorldSubsystem&, bool, const FString&)> Then);
+	/** Resolves a connected player's name/id to a platform player id (or returns Who). */
+	FString ResolvePlayerId(const FString& Who, FString& OutDisplayName) const;
 
 	bool Tick(float DeltaTime);
 	void RefreshSummariesAsync();
 	void HandleSessionTransition(FSharedWorldRuntime& Runtime);
 	void OnNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
 	void OnWorldBeginTearDown(UWorld* World);
+	void ReturnToMainMenu(const FText& Reason);
 
 	sw::LocalSettings Settings;
 	std::shared_ptr<sw::IHttpClient> Http;
@@ -115,9 +151,14 @@ private:
 	FString SettingsProblem;
 
 	TMap<FString, TUniquePtr<FSharedWorldRuntime>> Runtimes;
+	/** Creation, history, membership and invites: network I/O kept off the game thread. */
+	TUniquePtr<sw::SerialQueue> Background;
+	/** Read by long-running workers (sign-in polling) that must not touch `this`. */
+	std::shared_ptr<std::atomic<bool>> ShuttingDown = std::make_shared<std::atomic<bool>>(false);
 	mutable FCriticalSection SummaryMutex;
 	TMap<FString, FString> LastLocalStates; // edge-detection for HandleSessionTransition
-	TSet<FString> JoinsStarted;
+	TMap<FString, uint64> LastSequences;    // SessionView::Sequence last broadcast
+	TSet<FString> JoinsInFlight; // worlds whose join attempt the game is running
 	bool bSummaryRefreshInFlight = false;
 
 	UPROPERTY()
@@ -127,6 +168,9 @@ private:
 
 	/** The world currently being hosted or joined (only one game world at a time). */
 	FString ActiveWorldId;
+	/** Set by a planned migration: after release, go to the menu and join the successor. */
+	FString PendingRejoinWorldId;
+	bool bReturningToMenu = false;
 
 	mutable FCriticalSection SignInMutex;
 	FSharedWorldSignIn SignIn;

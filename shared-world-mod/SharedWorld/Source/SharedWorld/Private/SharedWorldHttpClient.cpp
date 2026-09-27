@@ -1,25 +1,35 @@
 #include "SharedWorldHttpClient.h"
 
+#include "HAL/Event.h"
+#include "HAL/PlatformProcess.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
 #include "Misc/FileHelper.h"
 #include "SharedWorldTypes.h"
 
+namespace
+{
+	/** Shared between the waiting worker and the completion callback, which may outlive a timed-out wait. */
+	struct FCompletion
+	{
+		FEvent* Done = FPlatformProcess::GetSynchEventFromPool(true);
+		TAtomic<bool> bConnectionFailed{false};
+		~FCompletion() { FPlatformProcess::ReturnSynchEventToPool(Done); }
+	};
+}
+
 sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest& Request)
 {
-	// Blocks on a worker queue thread; must never run on the game thread
-	// (that would stall heartbeats/session polling behind network I/O).
+	// Blocks a SharedWorldCore worker thread; never the game thread, which
+	// ticks the HTTP module and must keep rendering.
 	check(!IsInGameThread());
 
-	// UNVERIFIED (see STATUS.md): EHttpRequestRedirectPolicy::Never is the
-	// documented way to stop the HTTP backend from auto-following redirects,
-	// but its behaviour has not been confirmed against this game's build of
-	// libcurl. If it turns out to still follow redirects, an Authorization
-	// header could leak to a release-asset storage host; SW_TEST GitHubTests
-	// covers this at the provider layer with FakeGitHub, but that cannot
-	// exercise the real HTTP backend.
-	TSharedRef<IHttpRequest> Req = FHttpModule::Get().CreateRequest(FString(), EHttpRequestRedirectPolicy::Never);
+	// Redirects: whatever the backend does is safe. GitHubReleaseObjectStore
+	// accepts a 302 (and follows it itself without credentials) or an
+	// already-followed 200. libcurl >= 7.58 does not forward a custom
+	// Authorization header to a different host when it follows a redirect.
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
 	Req->SetVerb(UTF8_TO_TCHAR(Request.Method.c_str()));
 	Req->SetURL(UTF8_TO_TCHAR(Request.Url.c_str()));
 	for (const auto& [Key, Value] : Request.Headers)
@@ -36,56 +46,58 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 	else if (!Request.Body.empty())
 	{
 		TArray<uint8> Bytes;
-		Bytes.Append(reinterpret_cast<const uint8*>(Request.Body.data()), Request.Body.size());
+		Bytes.Append(reinterpret_cast<const uint8*>(Request.Body.data()), static_cast<int32>(Request.Body.size()));
 		Req->SetContent(MoveTemp(Bytes));
 	}
-	if (Request.TimeoutSeconds > 0)
-	{
-		Req->SetTimeout(static_cast<float>(Request.TimeoutSeconds));
-	}
+	const int32 TimeoutSeconds = Request.TimeoutSeconds > 0 ? Request.TimeoutSeconds : 60;
+	Req->SetTimeout(static_cast<float>(TimeoutSeconds));
 
-	FEvent* Done = FPlatformProcess::GetSynchEventFromPool(true);
-	bool bConnectionFailed = false;
-	Req->OnProcessRequestComplete().BindLambda([Done, &bConnectionFailed](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk)
+	TSharedRef<FCompletion, ESPMode::ThreadSafe> State = MakeShared<FCompletion, ESPMode::ThreadSafe>();
+	Req->OnProcessRequestComplete().BindLambda([State](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk)
 	{
-		bConnectionFailed = !bOk || !Response.IsValid();
-		Done->Trigger();
+		State->bConnectionFailed = !bOk || !Response.IsValid();
+		State->Done->Trigger();
 	});
 	if (!Req->ProcessRequest())
 	{
-		FPlatformProcess::ReturnSynchEventToPool(Done);
 		return sw::MakeError(sw::ErrorCode::Network, "could not start the HTTP request");
 	}
-	Done->Wait();
-	FPlatformProcess::ReturnSynchEventToPool(Done);
-
-	if (bConnectionFailed)
+	// The request has its own timeout; this outer bound only protects the
+	// worker if completion never arrives (e.g. the engine is shutting down).
+	if (!State->Done->Wait(FTimespan::FromSeconds(TimeoutSeconds + 30)))
+	{
+		Req->OnProcessRequestComplete().Unbind();
+		Req->CancelRequest();
+		return sw::MakeError(sw::ErrorCode::Network, "network request timed out");
+	}
+	FHttpResponsePtr Response = Req->GetResponse();
+	if (State->bConnectionFailed || !Response.IsValid())
 	{
 		return sw::MakeError(sw::ErrorCode::Network, "network request failed");
 	}
-	FHttpResponsePtr Response = Req->GetResponse();
+
 	sw::HttpResponse Out;
 	Out.Status = Response->GetResponseCode();
 	for (const FString& Header : Response->GetAllHeaders())
 	{
 		FString Key, Value;
-		if (Header.Split(TEXT(": "), &Key, &Value))
+		if (Header.Split(TEXT(":"), &Key, &Value))
 		{
-			Out.Headers.emplace_back(TCHAR_TO_UTF8(*Key), TCHAR_TO_UTF8(*Value));
+			Out.Headers.emplace_back(TCHAR_TO_UTF8(*Key.TrimStartAndEnd()), TCHAR_TO_UTF8(*Value.TrimStartAndEnd()));
 		}
 	}
 	const TArray<uint8>& Content = Response->GetContent();
-	if (!Request.ResponseFile.empty())
+	if (!Request.ResponseFile.empty() && Out.Status >= 200 && Out.Status < 300)
 	{
-		if (Out.Status >= 200 && Out.Status < 300 &&
-			!FFileHelper::SaveArrayToFile(Content, UTF8_TO_TCHAR(Request.ResponseFile.c_str())))
+		// Written in one piece; the core re-hashes the file before trusting it.
+		if (!FFileHelper::SaveArrayToFile(Content, UTF8_TO_TCHAR(Request.ResponseFile.c_str())))
 		{
 			return sw::MakeError(sw::ErrorCode::Io, "could not write the downloaded file");
 		}
 	}
 	else
 	{
-		Out.Body.assign(reinterpret_cast<const char*>(Content.GetData()), Content.Num());
+		Out.Body.assign(reinterpret_cast<const char*>(Content.GetData()), static_cast<size_t>(Content.Num()));
 	}
 	return Out;
 }

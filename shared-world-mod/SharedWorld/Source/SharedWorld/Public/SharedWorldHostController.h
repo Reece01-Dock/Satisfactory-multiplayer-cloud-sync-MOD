@@ -38,6 +38,8 @@ public:
 	bool IsHostingWorld(const FString& InWorldId) const { return bInGameWorld && WorldId == InWorldId; }
 	bool IsSaving() const { return bSaving; }
 	const FString& GetWorldId() const { return WorldId; }
+	/** BeginHosting ran but the game world never appeared (load failed or was cancelled). */
+	bool LoadTimedOut() const { return IsBusy() && !bInGameWorld && !bWorldEnded && LoadStartedAt > 0.0 && FPlatformTime::Seconds() - LoadStartedAt > 300.0; }
 
 	/** Saves the shared slot and reports Kind once the save completes. Returns a player message. */
 	FString SaveAndUpload(sw::SaveKind Kind);
@@ -76,6 +78,8 @@ private:
 	bool bSaving = false;
 	sw::SaveKind SavingKind = sw::SaveKind::Checkpoint;
 	double PublishDeadline = 0.0;
+	double LoadStartedAt = 0.0;
+	bool bWorldEnded = false; // the hosted world tore down; waiting for the release
 	FTSTicker::FDelegateHandle PublishTicker;
 	FTSTicker::FDelegateHandle CheckpointTicker;
 };

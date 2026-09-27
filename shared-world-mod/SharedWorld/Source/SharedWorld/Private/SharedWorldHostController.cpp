@@ -40,7 +40,8 @@ void USharedWorldHostController::Reset()
 	WorldId.Reset();
 	SaveName.Reset();
 	Session = nullptr;
-	bInGameWorld = bSessionPublished = bSaving = false;
+	bInGameWorld = bSessionPublished = bSaving = bWorldEnded = false;
+	LoadStartedAt = 0.0;
 }
 
 bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSession* InSession, const FString& InWorldId, const FString& SavePath)
@@ -76,6 +77,7 @@ bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSessio
 	Session = InSession;
 	WorldId = InWorldId;
 	SaveName = LoadName;
+	LoadStartedAt = FPlatformTime::Seconds();
 	return true;
 }
 
@@ -228,6 +230,7 @@ void USharedWorldHostController::OnWorldTearDown(UWorld* World)
 	FTSTicker::GetCoreTicker().RemoveTicker(PublishTicker);
 	FTSTicker::GetCoreTicker().RemoveTicker(CheckpointTicker);
 	bInGameWorld = false;
+	bWorldEnded = true;
 	GameWorld.Reset();
 	if (Session)
 	{

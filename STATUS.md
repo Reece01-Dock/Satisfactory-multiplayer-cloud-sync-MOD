@@ -1,136 +1,95 @@
 # STATUS
 
-_Last updated: 2026-09-27 — Milestones 1–2 done, first vertical slice (helper) done and tested, mod written but not yet compiled or run in game._
+_Last updated: 2026-09-27 — native architecture (Phases A–G) implemented and tested in the core; the Unreal layer is rewritten onto it but has **not been compiled or run in game** (no UE/SML toolchain in this environment)._
 
-## Completed work
+## Architecture in one paragraph
 
-| Milestone | State |
+Everything runs inside the mod — no helper process, no localhost server.
+`SharedWorldCore` (pure C++20, no UE headers) holds the whole engine:
+host lease with fencing generations, compare-and-swap commits, content-
+addressed saves, sync/backups/restore, the session state machine, host
+migration and crash recovery, membership, local settings and storage
+providers. The `SharedWorld` UE module is a thin adapter: FHttpModule,
+UE_LOG and Windows Credential Manager behind the core's interfaces, and a
+game-instance subsystem that ticks one `sw::WorldSession` per world and
+drives the game (load save / join / save) when a session asks. The Go
+helper stays in the repo as the reference implementation and test oracle
+(its save validator produced the shared conformance corpus). Design:
+`docs/native-architecture.md`.
+
+**Who does what with Steam / Epic vs storage:**
+
+| Need | Handled by |
 |---|---|
-| 1 Research | **Done** — `docs/research.md` (existing BAT workflow, SML 3.12 architecture, save lifecycle and format, session/join APIs, multiplayer requirements, provider CAS capabilities) |
-| 2 Skeleton | **Done** — `shared-world-helper/` (Go), `shared-world-mod/SharedWorld/` (SML C++), `docs/` |
-| 3 Status AVAILABLE/ACTIVE | Helper **done & tested**; mod panel written, **not run in game** |
-| 4 Lease system | **Done & tested** — acquire, heartbeat, expiry, release, fencing generation, CAS |
-| 5 Safe download | **Done & tested** — revision lookup, temp file, SHA-256 + size + full save-structure check, backup, atomic replace |
-| 6 Hosting decision | **Done & tested** in helper (HOST / JOIN / WAITING_FOR_HOST / ALREADY_HOSTING_ELSEWHERE); mod side written |
-| 7 Upload | **Done & tested** in helper (snapshot, create-only blob, read-back verify, fenced commit, conflict backups); mod triggers written |
-| 8 Auto-join | Mod code written against verified game APIs; **runtime unverified** |
-| 9 Crash recovery | Helper-side recovery **done & tested** (game crash, stale host return, unsynced progress); manual kill tests in game pending |
-| 10 UX | Main-menu panel (C++ UMG overlay) + `/sharedworld` chat command written; polish pending |
+| Joining a friend's live game | The game's own Steam/Epic sessions: the host's session id is published in the world state; friends can also join through the friends list as usual |
+| Player identity, members, roles | Steam/Epic account ids (`players.json` keys) — nobody types a GitHub name to play |
+| Storing saves + the host lease | A GitHub repository or a shared folder (Steam/Epic storage is per-user or read-only and has no compare-and-swap) |
+| Being able to *host* / take over | Write access to that storage: `/sharedworld granthost <github-user>` (GitHub collaborator invite). Players without it can still join games |
 
-## Verified behaviour
+## Phase state
 
-Verified by automated tests in this repo (`cd shared-world-helper && go test -race ./...`,
-all green, also 15× repeated under the race detector):
+| Phase | State |
+|---|---|
+| A Core foundation (Result, JSON, SHA-256, clock, logging with redaction, queues) | **Done & tested** |
+| B Model, repository/object-store interfaces, memory + folder providers | **Done & tested** |
+| C Lease + fencing (Races 1–3), revisions, CAS | **Done & tested** |
+| D Save validation (Go/C++ conformance corpus, 24 files agree) | **Done & tested** |
+| E Sync: safe download/upload, backups, restore-as-new-revision, dedup, offline cache (Races 4–6) | **Done & tested** |
+| F Session engine, host migration (successor reservation), crash recovery (candidate rules) | **Done & tested** |
+| G GitHub provider (Git Data API fast-forward CAS + release-asset objects), device-flow sign-in, membership, local settings | **Done & tested** against a faithful fake GitHub |
+| H UE integration (adapters, subsystem, host/join controllers, panel, chat) | **Written, not compiled** |
+| I Runtime validation in game | **Not started** — needs the game |
 
-* Play Shared World returns **HOST** for the first player and **JOIN** with
-  the host's name and join data for the next; the joining player downloads nothing.
-* 16 simultaneous acquisitions → exactly one host (on both the in-memory
-  and the filesystem store). Mutation check: with CAS disabled the same test
-  fails (4 hosts), so it genuinely detects the race.
-* Crashed host: heartbeat stops when the game PID disappears, the lease
-  expires after TTL + skew grace, another player becomes host with a higher
-  generation from the last committed revision.
-* Replaced host coming back: renew/commit/release rejected (fenced), its
-  save kept as a conflict backup, state `LEASE_LOST`.
-* Revision N can never overwrite N+1 (commit and upload both refuse; the
-  message reports cloud vs local revision).
-* Corrupt download (bit flip / truncated / extended) → rejected; local save byte-identical.
-* Upload interrupted mid-transfer → cloud head unchanged and still downloadable; retry works.
-* Commit applied but response lost → recognised as success.
-* Truncated save (crash mid-write) → never uploaded (header parse + every
-  zlib chunk inflated + declared body size checked).
-* Host crashed and nobody else played → its unsynced progress is uploaded on its next Play.
-* Same player, second instance/PC → refused, no second host.
-* Tests were mutation-checked where it matters: Race 1 fails with CAS
-  disabled; the NEWER_SAVE_EXISTS test hangs without the lock fix it
-  was written for (a real deadlock found during review).
-* IPC: no token → 401, browser `Origin` → 403, rebinding `Host` → 403,
-  unknown JSON fields → 400; token never appears in responses or logs.
+## Verified behaviour (86 core tests, `shared-world-mod/core-tests`)
 
-Verified with the real binary (`shared-world-helper/scripts/smoke-two-helpers.sh`):
-two helper processes with separate data dirs sharing one store — create
-world → A Play → HOST → publish join → B Play → JOIN (nothing downloaded)
-→ A final save → revision 2 uploaded, lease released → B Play → HOST with
-A's revision 2 (byte-identical). Second helper on the same data dir is refused.
+Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core.yml`).
 
-Cross-checked, not run: every game/SML include and symbol the mod uses
-(26 symbols: `UFGSaveSystem::*`, `UCommonSessionSubsystem::*`,
-`UCommonSessionStatics::JoinSession`, `ULocalUserInfo::GetGameSession`, SML
-modules/chat commands, …) exists with the used signature in the SML `dev`
-headers (commit `ae723cf`, SML 3.12.0).
+* **Exactly one host.** 16 simultaneous acquires → one host (memory, folder and fake-GitHub providers). Mutation-checked: disabling CAS gives 14–16 hosts; on GitHub, allowing non-fast-forward ref updates breaks it (the design depends on `force:false`).
+* **Fencing.** A replaced host coming back cannot renew, commit or release; its save is kept as a conflict backup. A client holding revision N can never overwrite N+1.
+* **Safe transfer.** Corrupt / truncated / extended downloads are rejected and the local save stays byte-identical; interrupted uploads leave the cloud head intact; a lost commit response is resolved, never blindly retried; truncated local saves are never uploaded.
+* **Host flows.** HOST then JOIN; 5 simultaneous Play → one host; stop uploads + releases; checkpoints advance revisions; newer cloud revision refuses upload (backup kept).
+* **Migration.** Planned handover reserves the world for the successor and hands over the exact revision; after the window anyone may take over. A successor recorded without an install id (the host cannot know it) matches on player id.
+* **Crash recovery.** Clients of a crashed host take over in a deterministic stagger after lease expiry; a crashed host resumes its own lease and recovers unsynced progress; recovery candidates are accepted only from the crashed generation, based on the head, validated and available — never because they are newest.
+* **A client that quit to the menu never takes over** (mutation-checked: without the fix it silently became host).
+* **Restore** creates a new revision; history is never rewritten.
+* **Membership.** Roles gate edits; the last owner is protected; concurrent edits all land; edits never touch the lease document.
+* **Credentials.** Tokens never appear in logs, settings, the repository, or the UI; the object-storage redirect never receives the Authorization header; device flow handles pending / slow_down / denied / expired and hostile replies.
+* **Local settings.** Hostile world ids and paths are rejected; a damaged file is reported (the mod sets it aside instead of overwriting); a file from a newer mod is never overwritten.
 
-## Current architecture
+## Unreal layer (written, not compiled)
 
-See `docs/architecture.md`. In one paragraph: the SML mod renders the
-helper's session state and reports game events; the local Go helper owns
-the only state machine and the HOST/JOIN decision; all shared state is one
-JSON record per world updated only by compare-and-swap, with a
-monotonically increasing generation as fencing token; saves are immutable,
-uniquely named blobs that become current only through a fenced commit.
-IPC is authenticated localhost HTTP (`docs/ipc-protocol.md`).
+* `SharedWorld.Build.cs` depends on `SharedWorldCore`; the helper executable and IPC client are removed.
+* Adapters: `FSharedWorldHttpClient` (blocking only on core worker threads, bounded wait, completion state survives a timeout), `FSharedWorldLogSink`, `FSharedWorldCredentialStore` (Windows Credential Manager).
+* `USharedWorldSubsystem`: loads `%LOCALAPPDATA%/SatisfactorySharedWorld/settings.json`, one runtime per world, ticks sessions every second, reacts to `READY_TO_HOST` (load save, going to the menu first if needed), `JOIN_READY` (join from the menu), `MIGRATING` (migration save), `LEASE_LOST` / handover (return to menu, old host rejoins as client), host load timeout (5 min). Creation, history, membership and invites run on a background queue.
+* Game events: network failure → `OnHostConnectionLost` / `OnJoinFailed`; client world ready → `OnJoinedAsClient`; client leaving on purpose → `OnLeftAsClient`; hosted world teardown → `OnWorldEnded` with retry until released.
+* UI (C++ UMG, main menu): world list with status, host, players, revision, last played; Play / Cancel / Retry / Dismiss; details with steps, error detail, history, restore-by-number, remove from list; setup box with GitHub sign-in (device code shown in the panel), convert a save, add a friend's world.
+* Chat: `/sharedworld status | history | players | save | stop | migrate <player> | allow <player> [role] | remove <player> | open | restrict | granthost <github-user> | log`.
 
 ## Known limitations
 
-* **No real cloud provider yet.** Only `filesystem` (single machine or a
-  true network share) and in-memory (tests). Never point the filesystem
-  provider at a Google Drive/OneDrive/Dropbox sync folder.
-* **Mod not compiled or run.** This environment has no Unreal/SML toolchain.
-* Exiting a hosted world without `/sharedworld stop` uploads the last
-  *completed* shared save (last checkpoint, at most 15 min old) — progress
-  after it is lost. Pause-menu hooks for a proper "save & release on exit"
-  are not implemented.
-* Panel is a viewport overlay on the main menu, not inserted into the
-  game's menu list (widget-hook parent name unverified).
-* World creation is an IPC call (`POST /v1/worlds`), no UI yet. No
-  Backups / Restore / Players / Settings screens yet.
-* Helper restart while hosting: resume via `POST /session/attach` exists in
-  the helper, but the mod does not call it yet — the lease expires instead
-  (safe, but the host loses authority).
-* Lease-expiry judgement uses local clocks (+30 s grace). Skew cannot cause
-  lost updates (fencing), only earlier/later takeover.
-* The mod's player id comes from `ULocalPlayer::GetPreferredUniqueNetId()`;
-  its format across Steam/Epic is not yet checked in game.
+* **Not compiled.** Written against SML 3.12 / UE 5.3 headers that were checked earlier, plus standard engine APIs; expect small compile fixes.
+* **GitHub OAuth client id is empty** (`GitHubClientId` in `SharedWorldSubsystem.cpp`): the project owner must register a GitHub OAuth App with device flow enabled. Until then only folder storage works.
+* **Installed-mod list** is not collected (the SML API was not verified), so worlds record no required mods.
+* **Game build number** is taken from the engine changelist; must be confirmed to match save headers.
+* **Successor readiness** (compatible, storage reachable, has head cached) is not exchanged between players; planned migration trusts the host's choice and falls back to normal takeover if the successor cannot host.
+* **Peer recovery candidates** come from the host's own reports; clients cannot save the host's world.
+* Menu UI is an overlay panel, not inserted into the game's menu list; no dedicated in-game players/settings screens yet (chat commands cover them).
+* Friends join via the game's own friends list; the mod does not open the platform invite dialog itself (API not verified).
+* Exiting a hosted world without `/sharedworld stop` uploads the last completed save (checkpoints every 15 min).
 
-## Tests completed
+## Runtime validation needed (Phase I)
 
-| Package | Tests |
-|---|---|
-| `lease` | Race 1 (16 concurrent, fs + mem), Race 2 (expiry + skew grace), Race 3 (fencing), stale base revision, renew after unobserved expiry, same-user second instance, release, invalid/tampered records |
-| `syncer` | round trip + backup, Race 4 (cloud changed during upload), stale client, Race 5 (3 corruption kinds), Race 6 (connection drop), ambiguous commit, truncated save, unsynced-change detection |
-| `world` | HOST then JOIN, simultaneous Play ×5, clean stop, crash recovery + stale return, unsynced recovery, fenced host detects loss, second instance, corrupt cloud save releases lease, host without join info, newer cloud revision refuses upload (NEWER_SAVE_EXISTS + backup), illegal transitions |
-| `store` | FS CAS across 6 instances (no lost updates), create-only blobs / no partial blobs, key traversal |
-| `savefile` | valid, truncated, corrupt chunk, garbage, save names |
-| `ipc` | auth / origin / host / strict JSON, HTTP HOST→JOIN |
-| `logx` | secret redaction |
-| smoke | two real helper processes (script) |
+1. `LoadSaveFile` + `Start()` on the returned sequence: loads once, no double travel.
+2. Session-id round trip across machines (`OnlineSessionIdToString` → `MakeOnlineSessionId` → `ResolveOnlineSession` → `JoinSession`), on Steam and Epic.
+3. `UFGSaveSystem::GetSaveDirectoryPath()` is where `LoadSaveGameHeaderSync` looks (Steam vs Epic save folders).
+4. `SaveGame` delegate fires after the file is closed (core waits for a stable file either way).
+5. `ClientReturnToMainMenuWithTextReason` returns to Satisfactory's main menu (lease lost / handover / successor).
+6. FHttpModule on worker threads; whether the game's libcurl forwards `Authorization` across a redirect host (the provider does not depend on it, but it must not leak).
+7. Player id format from `GetPreferredUniqueNetId()` / `APlayerState::GetUniqueId()` is identical for the same account on host and clients.
 
-CI: `.github/workflows/helper.yml` runs vet + tests on Linux (race) and
-Windows, the smoke test, and a Windows cross-build.
+## Next steps
 
-## Current blockers (need a real game)
-
-1. **Does `LoadSaveFile` need `Start()`?** The mod calls `Start()` on the
-   returned sequence (sibling APIs say the caller starts it). Must confirm
-   it neither fails nor double-travels.
-2. **Session-id round trip.** Confirm `OnlineSessionIdToString` on the
-   host → `MakeOnlineSessionId` + `ResolveOnlineSession` on another
-   machine/store resolves, and that `UCommonSessionStatics::JoinSession`
-   starts the join itself.
-3. **Save directory on Epic.** Confirm `UFGSaveSystem::GetSaveDirectoryPath()`
-   is where `LoadSaveGameHeaderSync` looks (the game has common vs Epic locations).
-4. **`SaveGame` callback timing.** Confirm the file is closed when the
-   delegate fires (the helper's stability + structure checks protect either way).
-5. Compile the mod in the SML 3.12 starter project (UE header details such
-   as `FTSTicker`, `UUserWidget` viewport helpers were written from UE 5.3
-   knowledge, not compiled here).
-
-## Next task
-
-1. Compile the mod in an SML dev environment; run the two-account in-game
-   test for blockers 1–4 (two PCs, filesystem provider on a shared
-   network folder, or one PC + two accounts).
-2. Implement the first real cloud provider with native CAS (S3-compatible
-   conditional writes: works with Cloudflare R2 / MinIO / AWS S3), plus
-   OS-keychain credential storage.
-3. Pause-menu "Stop hosting & upload" and save-on-exit hook; mod calls
-   `session/attach` after reconnecting to a restarted helper.
+1. Compile in the SML starter project; fix compile errors.
+2. Register the GitHub OAuth App; set the client id.
+3. Two-PC test (Steam + Epic): create from a save, host, join, checkpoint, stop, crash the host, planned migration, restore.
+4. Replace the chat-only players/settings management with menu screens.
