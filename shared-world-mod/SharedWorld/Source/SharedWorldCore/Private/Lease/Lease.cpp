@@ -114,6 +114,26 @@ namespace sw
 		return WorldSettings::FromJson(V);
 	}
 
+	Result<std::string> WorldStore::UpdateDocument(const std::string& Path, const std::function<Result<std::string>(const std::string& Current)>& Fn, const std::string& Message)
+	{
+		if (Path == Paths::State) return MakeError(ErrorCode::Invalid, "use Mutate for the state document");
+		SW_TRY(ValidateRepoPath(Path));
+		for (int Attempt = 0; Attempt < MaxAttempts; ++Attempt)
+		{
+			StateSnapshot Snap;
+			SW_ASSIGN(Snap, Load()); // also proves the world exists and is valid
+			auto Current = Repo->ReadFile(Snap.CommitId, Path);
+			if (!Current && !Current.Is(ErrorCode::NotFound)) return Current.Err();
+			std::string Next;
+			SW_ASSIGN(Next, Fn(Current.Ok() ? *Current : std::string()));
+			auto C = Repo->Commit(Snap.CommitId, {{Path, Next}}, Message);
+			if (C.Ok()) return *C;
+			if (!C.Is(ErrorCode::Conflict)) return C.Err();
+			std::this_thread::sleep_for(std::chrono::milliseconds(2 + Attempt * 3));
+		}
+		return MakeError(ErrorCode::Contention, "too much concurrent activity on this world, try again");
+	}
+
 	Result<StateSnapshot> WorldStore::Mutate(const MutateFn& Fn)
 	{
 		for (int Attempt = 0; Attempt < MaxAttempts; ++Attempt)

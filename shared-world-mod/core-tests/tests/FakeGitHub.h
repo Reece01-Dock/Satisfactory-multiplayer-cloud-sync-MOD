@@ -122,6 +122,7 @@ namespace swtest
 		std::map<int64_t, std::string> AssetData;
 		std::set<std::pair<int64_t, std::string>> AssetNames; // (release, name)
 		std::map<std::string, int64_t> Signed;                // object path -> asset id
+		std::set<std::string> Collaborators;
 		int64_t NextId = 100;
 
 		static std::string Id40(const std::string& S) { return sw::Sha256::HexOf(S).substr(0, 40); }
@@ -217,6 +218,12 @@ namespace swtest
 			if (!Body) return Reply(400, R"({"message":"Problems parsing JSON"})");
 			const Value& B = *Body;
 
+			if (M == "PUT" && P.compare(0, 15, "/collaborators/") == 0)
+			{
+				if (B.Find("permission") == nullptr) return Reply(422, R"({"message":"Validation Failed"})");
+				const bool bNew = Collaborators.insert(P.substr(15)).second;
+				return bNew ? Reply(201, R"({"id":1,"permissions":"write"})") : Reply(204, "");
+			}
 			if (M == "GET" && P.compare(0, 14, "/git/ref/heads") == 0)
 			{
 				if (Empty()) return Reply(409, R"({"message":"Git Repository is empty."})");

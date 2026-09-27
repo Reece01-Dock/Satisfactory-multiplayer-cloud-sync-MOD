@@ -188,6 +188,8 @@ namespace sw
 	/** state/players.json */
 	struct PlayerList
 	{
+		/** Anyone with storage access may PLAY; roles still gate restore/settings/invites. */
+		bool bOpen = true;
 		std::vector<Member> Members;
 
 		const Member* Find(const std::string& PlayerId) const;

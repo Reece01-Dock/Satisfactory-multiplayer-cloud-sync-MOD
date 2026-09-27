@@ -18,7 +18,7 @@ namespace sw
 		std::string OriginalSaveName;
 		LocalVersions Versions;
 		WorldSettings Settings;
-		/** Empty: anyone with storage access may play. Otherwise creator becomes owner. */
+		/** Creator is always the owner. false: anyone with storage access may PLAY (players.open). */
 		bool bRestrictToMembers = true;
 	};
 

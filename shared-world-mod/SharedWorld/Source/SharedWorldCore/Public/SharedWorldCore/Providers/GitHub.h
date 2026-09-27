@@ -43,6 +43,9 @@ namespace sw
 		Status Validate() const;
 	};
 
+	/** GitHub user / organisation / repository name rules. */
+	bool ValidGitHubName(const std::string& Name);
+
 	/** Shared request plumbing: auth, JSON, error mapping. */
 	class GitHubApi
 	{
@@ -119,4 +122,11 @@ namespace sw
 		std::map<std::string, Asset> Assets; // sha -> asset
 		std::vector<Release> Releases;
 	};
+
+	/**
+	 * Gives a friend write access to the world's repository (the real access
+	 * boundary). Returns true if GitHub created an invitation the friend must
+	 * accept, false if they already had access.
+	 */
+	Result<bool> InviteGitHubCollaborator(std::shared_ptr<IHttpClient> Http, const GitHubConfig& Config, const std::string& Login);
 }

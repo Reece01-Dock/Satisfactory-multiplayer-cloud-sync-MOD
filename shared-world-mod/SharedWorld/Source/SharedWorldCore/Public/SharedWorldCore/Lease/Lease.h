@@ -84,6 +84,12 @@ namespace sw
 		 * LastSeen). Lost races are retried with jittered backoff.
 		 */
 		Result<StateSnapshot> Mutate(const MutateFn& Fn);
+		/**
+		 * CAS-updates one non-state document (players / settings) without
+		 * touching the state. Fn gets the current content ("" if missing).
+		 */
+		Result<std::string> UpdateDocument(const std::string& Path, const std::function<Result<std::string>(const std::string& Current)>& Fn, const std::string& Message);
+
 		/** State observed by the most recent Mutate attempt (for error reporting). */
 		std::optional<StateSnapshot> LastSeen;
 

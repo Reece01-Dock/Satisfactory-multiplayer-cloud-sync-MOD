@@ -57,6 +57,8 @@ namespace sw
 		}
 	}
 
+	bool ValidGitHubName(const std::string& Name) { return ValidName(Name); }
+
 	Status GitHubConfig::Validate() const
 	{
 		if (!ValidName(Owner) || !ValidName(Repo)) return MakeError(ErrorCode::Invalid, "invalid GitHub owner/repository name");
@@ -575,5 +577,20 @@ namespace sw
 			if (A.bComplete) Out.push_back(Sha);
 		}
 		return Out;
+	}
+
+	Result<bool> InviteGitHubCollaborator(std::shared_ptr<IHttpClient> Http, const GitHubConfig& Config, const std::string& Login)
+	{
+		if (!ValidName(Login) || Login.find('.') != std::string::npos || Login.size() > 39) return MakeError(ErrorCode::Invalid, "invalid GitHub username");
+		GitHubApi Api(std::move(Http), Config);
+		HttpRequest Req;
+		Req.Method = "PUT";
+		Req.Url = Api.RepoUrl("/collaborators/" + Login);
+		json::Value Body;
+		Body.Set("permission", "push");
+		Req.Body = json::Serialize(Body);
+		HttpResponse R;
+		SW_ASSIGN(R, Api.Call(std::move(Req), {201, 204}));
+		return R.Status == 201;
 	}
 }

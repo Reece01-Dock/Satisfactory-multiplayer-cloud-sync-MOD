@@ -228,9 +228,13 @@ namespace sw
 	std::optional<std::string> WorldSession::PermissionProblem(const std::string& CommitId, Permission P)
 	{
 		auto List = Leases->Store().LoadPlayers(CommitId);
-		if (!List.Ok() || List->Members.empty()) return std::nullopt; // open world
+		if (!List.Ok() || List->Members.empty()) return std::nullopt; // no member list: open world
 		const Member* M = List->Find(Cfg.Me.PlayerId);
-		if (!M) return std::string("You are not a member of this Shared World. Ask its owner to invite you.");
+		if (!M)
+		{
+			if (P == Permission::Play && List->bOpen) return std::nullopt;
+			return std::string("You are not a member of this Shared World. Ask its owner to add you.");
+		}
 		if (!HasPermission(M->MemberRole, P)) return std::string("Your role in this Shared World does not allow that.");
 		return std::nullopt;
 	}

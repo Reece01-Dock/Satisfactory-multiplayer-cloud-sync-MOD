@@ -22,10 +22,8 @@ namespace sw
 		W.Info.GameBuild = P.Versions.GameBuild;
 		W.Info.ModVersion = P.Versions.ModVersion;
 		W.Info.RequiredMods = P.Versions.InstalledMods;
-		if (P.bRestrictToMembers)
-		{
-			W.Players.Members.push_back(Member{P.Creator.PlayerId, P.Creator.DisplayName, Role::Owner});
-		}
+		W.Players.bOpen = !P.bRestrictToMembers;
+		W.Players.Members.push_back(Member{P.Creator.PlayerId, P.Creator.DisplayName, Role::Owner});
 		W.Settings = P.Settings;
 		if (W.Settings.Name.empty()) W.Settings.Name = P.Name;
 

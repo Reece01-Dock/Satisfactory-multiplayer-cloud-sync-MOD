@@ -560,6 +560,7 @@ namespace sw
 			A.push_back(std::move(MV));
 		}
 		Value V;
+		V.Set("open", bOpen);
 		V.Set("members", Value(std::move(A)));
 		return V;
 	}
@@ -569,6 +570,8 @@ namespace sw
 		const Value* Arr = V.Find("members");
 		if (!Arr || !Arr->IsArray() || Arr->AsArray().size() > 256) return MakeError(ErrorCode::Invalid, "players.members invalid");
 		PlayerList L;
+		const Value* Open = json::GetOptional(V, "open");
+		if (Open && !Open->IsBool()) return MakeError(ErrorCode::Invalid, "players.open must be a boolean");
 		for (const Value& MV : Arr->AsArray())
 		{
 			Member M;
@@ -579,6 +582,8 @@ namespace sw
 			SW_ASSIGN(M.MemberRole, ParseRole(RoleName));
 			L.Members.push_back(std::move(M));
 		}
+		// Files written before "open" existed: a member list meant restricted.
+		L.bOpen = Open ? Open->AsBool() : L.Members.empty();
 		SW_TRY(L.Validate());
 		return L;
 	}
