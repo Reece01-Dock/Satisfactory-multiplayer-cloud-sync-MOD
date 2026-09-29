@@ -20,17 +20,19 @@ cmake --build build && ./build/sw_tests
 
 ## GitHub storage
 
-1. The mod's release build needs a GitHub OAuth App with **device flow
-   enabled**; put its client id in `GitHubClientId`
-   (`SharedWorldSubsystem.cpp`). No client secret is used or shipped.
-2. Create a (private) repository for your worlds, e.g. `you/our-saves`.
-   It may be empty; the mod initialises it. Each world lives on its own
-   branch `shared-world/<world-id>`; saves are release assets.
-3. In the main menu: **+ Add / Account → Sign in with GitHub**, open the
-   shown address and enter the code. The token goes to Windows Credential
-   Manager, never into settings, saves or the repository.
-4. Enter the storage (`you/our-saves`), your save's name and a world name,
-   then **Create Shared World**. Your original save is not changed.
+See **[github-oauth-setup.md](github-oauth-setup.md)** for OAuth App creation,
+Client ID configuration, and device-login testing.
+
+1. Create a GitHub OAuth App with **Device Flow** enabled; ship only the public
+   Client ID (`SHAREDWORLD_GITHUB_CLIENT_ID` for local dev, or
+   `SHAREDWORLD_GITHUB_CLIENT_ID_EMBEDDED` baked into packaged builds). No
+   client secret is used or shipped.
+2. Link GitHub in Shared Worlds. On first Shared World create/upload the mod
+   **automatically creates** a private repo `satisfactory-shared-worlds` under
+   your account (no manual repo setup).
+3. Each world lives on branch `shared-world/<world-id>`; save bytes are release
+   assets. Your original personal save is not changed.
+4. Enter a world name / pick a save and **Create Shared World**, then Play.
 
 ## Friends
 

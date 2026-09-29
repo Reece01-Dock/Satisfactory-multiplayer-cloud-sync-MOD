@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "SharedWorldChatCommand.h"
 #include "SharedWorldSubsystem.h"
+#include "SharedWorldTypes.h"
 
 namespace
 {
@@ -24,9 +25,14 @@ void URootMenuWorld_SharedWorld::DispatchLifecycleEvent(ELifecyclePhase Phase)
 	Super::DispatchLifecycleEvent(Phase);
 	if (Phase == ELifecyclePhase::POST_INITIALIZATION)
 	{
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=root_menu_post_init"));
 		if (USharedWorldSubsystem* SW = GetSharedWorld(GetWorld()))
 		{
 			SW->OnMenuWorldReady(GetWorld());
+		}
+		else
+		{
+			UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=root_menu_no_subsystem"));
 		}
 	}
 }

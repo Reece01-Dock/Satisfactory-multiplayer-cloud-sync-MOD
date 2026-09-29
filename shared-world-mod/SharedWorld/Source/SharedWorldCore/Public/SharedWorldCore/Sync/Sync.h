@@ -139,6 +139,8 @@ namespace sw
 	{
 		std::string DataDir; // <data>/worlds/<id>/..., <data>/cache/...
 		int KeepLocalBackups = 20;
+		/** Cloud revisions + unreferenced save objects retained after each upload. Min 5. */
+		int KeepCloudRevisions = 5;
 	};
 
 	class SyncEngine
@@ -177,6 +179,8 @@ namespace sw
 	private:
 		std::string WorldDir() const;
 		Result<std::string> FetchVerified(const RevisionMeta& Head, bool& bFromCache);
+		/** Best-effort: drop revision metadata + orphaned objects beyond KeepCloudRevisions. */
+		void PruneOldRevisions(LeaseToken& Token);
 
 		std::shared_ptr<IObjectStore> ObjectStore;
 		std::shared_ptr<LeaseManager> Leases;

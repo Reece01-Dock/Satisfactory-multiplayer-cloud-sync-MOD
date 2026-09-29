@@ -6,6 +6,7 @@
 #include "UObject/Object.h"
 #include "SharedWorldHostController.generated.h"
 
+class ASharedWorldInviteBridge;
 class USharedWorldSubsystem;
 
 /**
@@ -32,6 +33,10 @@ public:
 
 	void OnGameWorldReady(UWorld* World);
 	void OnWorldTearDown(UWorld* World);
+	/** Esc/pause opened while hosting: write a disk checkpoint before Exit to Menu. */
+	void OnPauseMenuOpened();
+	/** Poll FG pause menu open edge; call from subsystem tick while hosting. */
+	void PollPauseMenu();
 
 	/** True from BeginHosting until the session releases (NotifyReleased) or hosting is abandoned. */
 	bool IsBusy() const { return !WorldId.IsEmpty(); }
@@ -56,6 +61,9 @@ public:
 	/** Currently connected players, best-effort identity (InstallId is only known for this machine's own player). */
 	std::vector<sw::SessionPlayer> GetConnectedPlayers() const;
 
+	/** Always-relevant actor used to push world invites to connected clients. */
+	ASharedWorldInviteBridge* EnsureInviteBridge();
+
 private:
 	bool TickPublishSession(float);
 	bool TickCheckpoint(float);
@@ -69,6 +77,9 @@ private:
 	UPROPERTY()
 	TObjectPtr<USharedWorldSubsystem> Owner;
 
+	UPROPERTY()
+	TWeakObjectPtr<ASharedWorldInviteBridge> InviteBridge;
+
 	sw::WorldSession* Session = nullptr; // owned by the subsystem's runtime map; outlives this controller's use of it
 	TWeakObjectPtr<UWorld> GameWorld;
 	FString WorldId;
@@ -79,7 +90,10 @@ private:
 	sw::SaveKind SavingKind = sw::SaveKind::Checkpoint;
 	double PublishDeadline = 0.0;
 	double LoadStartedAt = 0.0;
+	double LastPauseSaveAt = 0.0;
+	double TearDownAt = 0.0;
 	bool bWorldEnded = false; // the hosted world tore down; waiting for the release
+	bool bPauseMenuWasOpen = false;
 	FTSTicker::FDelegateHandle PublishTicker;
 	FTSTicker::FDelegateHandle CheckpointTicker;
 };

@@ -7,10 +7,15 @@
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h" // ENetworkFailure
 #include "SharedWorldCore/App/LocalSettings.h"
+#include "SharedWorldCore/HostMigration/Diagnostics.h"
+#include "SharedWorldCore/HostMigration/HostMigration.h"
 #include "SharedWorldCore/Providers/GitHubAuth.h"
 #include "SharedWorldCore/Util/TaskQueue.h"
 #include "SharedWorldCore/World/WorldSession.h"
 #include "SharedWorldTypes.h"
+#include "Services/SharedWorldCreationService.h"
+#include "Services/SharedWorldDiscoveryService.h"
+#include "Services/SharedWorldInviteService.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "SharedWorldSubsystem.generated.h"
 
@@ -29,20 +34,46 @@ struct FSharedWorldRuntime
 	std::shared_ptr<sw::LeaseManager> Leases;
 	std::shared_ptr<sw::SyncEngine> Sync;
 	TUniquePtr<sw::WorldSession> Session;
+	/** Continuous host ranking + migration state machine (same core as tests). */
+	TUniquePtr<sw::HostMigrationEngine> HostMigration;
 	/** Set while CreateWorldFromSave runs: Play is refused. */
 	bool bCreating = false;
 	/** Refreshed on a background thread; read under USharedWorldSubsystem::SummaryMutex. */
 	sw::WorldSummary LastSummary;
+#if !UE_BUILD_SHIPPING
+	/** Dev-only injected network / storage faults. */
+	bool bDevStorageDisabled = false;
+	int32 DevInjectedLatencyMs = 0;
+	int32 DevInjectedLossBp = 0;
+#endif
 };
 
-/** State of an in-progress "sign in with GitHub" device-flow attempt. */
+/** UI-facing GitHub link state (mirrors sw::GitHubAuthState). */
+enum class ESharedWorldGitHubAuthState : uint8
+{
+	Disconnected,
+	Starting,
+	WaitingForUser,
+	Authorizing,
+	Connected,
+	Expired,
+	Denied,
+	Error,
+};
+
+/** Snapshot for the Link GitHub / Settings UI. Tokens are never included. */
 struct FSharedWorldSignIn
 {
+	ESharedWorldGitHubAuthState State = ESharedWorldGitHubAuthState::Disconnected;
 	bool bInProgress = false;
 	FString UserCode;
 	FString VerificationUri;
 	FString Error;
+	FString PlayerMessage;
+	FString Login;
+	FString AvatarUrl;
 	bool bDone = false;
+	bool bConfigured = true;
 };
 
 /**
@@ -60,20 +91,60 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
+	/** Result of a background operation, delivered on the game thread. */
+	using FDone = TFunction<void(bool bOk, const FString& Message)>;
+
 	/** Snapshot for the main-menu panel, safe to call every frame. */
 	TArray<FSharedWorldEntryView> GetWorldViews();
 	FOnSharedWorldChanged OnChanged;
+
+	/** Player-facing services (owned by the subsystem). */
+	class FSharedWorldDiscoveryService& Discovery();
+	class FSharedWorldInviteService& Invites();
+	class FSharedWorldCreationService& Creation();
+
+	/** Kick a lightweight cloud refresh without freezing the UI. */
+	void RequestDiscoveryRefresh();
+	TArray<struct FSharedWorldPendingInviteView> GetPendingInviteViews() const;
+	bool NeedsWelcomeStorageConnect() const;
+	void MarkWelcomeDone();
+	bool IsWelcomeDone() const;
+	void PreferGitHubCloudStorageIfConnected();
+	/** Worlds created while storage was "local folder" are moved to GitHub when linked. */
+	void UpgradeLegacyFolderWorldsToGitHubIfConnected();
+	sw::ProviderConfig ResolveDefaultStorage(FString& OutNote) const;
+	const sw::WorldEntry* FindWorldEntry(const FString& WorldId) const;
+	FString EnsureInviteCode(const FString& WorldId);
+	void QueueIncomingInvite(const FString& WorldId, const FString& WorldName, const FString& FromPlayerId, const FString& FromDisplayName, const sw::ProviderConfig& Provider);
+	/** Soft-add a world pushed over the network by the host (no share code / no storage verify). */
+	void ReceivePushedWorldInvite(const FString& WorldId, const FString& WorldName, const FString& FromDisplayName, const FString& ProviderKind, const FString& OwnerOrPath, const FString& Repo);
+	/** Host: multicast this world's provider config to a connected player so they auto-add it. */
+	bool PushWorldInviteToConnectedPlayer(const FString& TargetPlayerId, const FString& WorldId);
+	void AcceptPendingInvite(const FString& InviteId, FDone OnDone);
+	void DeclinePendingInvite(const FString& InviteId, FDone OnDone);
+	void JoinUsingShareCode(const FString& Code, FDone OnDone);
+	/** Convert the active in-game save into a Shared World (Manage Session path). */
+	void CreateWorldFromCurrentSession(const FString& DisplayName, FDone OnDone);
 
 	/** The "Play Shared World" button. */
 	void Play(const FString& WorldId);
 	void Dismiss(const FString& WorldId);
 	void Cancel(const FString& WorldId);
 	void Restore(const FString& WorldId, int64 Revision);
-	/** Planned migration to a connected player (name or id). Returns a player message. */
 	FString RequestMigrationTo(const FString& WorldId, const FString& Who);
 
-	/** Result of a background operation, delivered on the game thread. */
-	using FDone = TFunction<void(bool bOk, const FString& Message)>;
+	/**
+	 * Most recently played Shared World id (from local settings), or empty.
+	 * Intended for Satisfactory Continue once that menu can be hooked safely:
+	 * Continue → Play(GetMostRecentlyPlayedWorldId()) instead of a stale local save.
+	 */
+	FString GetMostRecentlyPlayedWorldId() const;
+	/** If a Shared World was played more recently than 0, invokes Play on it. Returns false if none. */
+	bool TryContinueLastSharedWorld();
+	/** True when a FG save name belongs to this mod (`SharedWorld_<id>`), for Load-menu protection. */
+	static bool IsSharedWorldSaveName(const FString& SaveName);
+	/** World id embedded in a SharedWorld_ save name, or empty. */
+	static FString WorldIdFromSaveName(const FString& SaveName);
 
 	/** Adds a world that already exists in Provider (verified before it is listed). */
 	void AddExistingWorld(const FString& WorldId, const FString& DisplayName, const sw::ProviderConfig& Provider, FDone OnDone);
@@ -86,6 +157,10 @@ public:
 	// ---- history / players (background; results as player-facing text)
 	void FetchHistory(const FString& WorldId, int32 MaxCount, FDone OnDone);
 	void FetchPlayers(const FString& WorldId, FDone OnDone);
+	/** Steam/Epic id for the local player (empty until online identity is ready). */
+	FString GetLocalPlayerId() const;
+	/** Players currently connected to the hosted game (empty if not hosting). */
+	TArray<FSharedWorldFriendInfo> GetConnectedSessionPlayers() const;
 	/**
 	 * Membership is keyed by the game's Steam/Epic account ids: Who is a
 	 * connected player's name or id (host), or a raw player id.
@@ -103,27 +178,59 @@ public:
 	/** Non-empty when the local world list could not be loaded (shown above the list). */
 	const FString& GetSettingsProblem() const { return SettingsProblem; }
 
-	// ---- GitHub sign-in (device flow)
+	/**
+	 * Development diagnostics: host ranking, peer latency matrix, migration phase.
+	 * Safe to call every frame; returns a plain-text snapshot.
+	 */
+	FString GetHostMigrationDiagnostics(const FString& WorldId);
+
+#if !UE_BUILD_SHIPPING
+	/** Dev-only fault injection for two/three-instance Satisfactory tests. */
+	FString DevInject(const FString& WorldId, const FString& Action);
+#endif
+
+	// ---- GitHub sign-in (device flow; no gh CLI / PAT / SSH)
 	void BeginGitHubSignIn();
+	void CancelGitHubSignIn();
+	void TestGitHubAccess(FDone OnDone);
 	FSharedWorldSignIn GetSignInStatus() const;
 	FString GetGitHubLogin() const { return UTF8_TO_TCHAR(Settings.GitHubLogin.c_str()); }
 	void SignOutOfGitHub();
+	/** True when this build has a GitHub OAuth client id (env or packaged). */
+	bool IsGitHubAuthConfigured() const;
 
 	// ---- chat command surface (see SharedWorldChatCommand)
 	FString RequestCheckpoint();
 	FString RequestStop();
 	FString DescribeActiveSession() const;
+	/** Non-mutating host reachability probe for /sharedworld verify. */
+	FString DebugVerifyHost(const FString& WorldId = FString());
+	/** HostController → HostResponder when the session is published. */
+	void NotifyHostResponderReady(const FString& WorldId, const FString& SessionId, int64 Generation, int64 Revision, int32 PlayerCount);
+	void NotifyHostResponderCleared();
 	/** The world being hosted or joined, else "" (chat commands default to it). */
 	const FString& GetActiveWorldId() const { return ActiveWorldId; }
 	FString RecentLog(int32 MaxLines) const;
 
-	/** Lifecycle notifications from the SML world modules. */
+	/** Lifecycle notifications from the SML world modules (and our menu fallback). */
 	void OnMenuWorldReady(UWorld* World);
 	void OnGameWorldReady(UWorld* World);
 
+	/** Full-screen migration / recovery overlay driven by HostMigrationEngine. */
+	void EnsureMigrationOverlay(UWorld* World);
+	void UpdateMigrationOverlay(const FString& WorldId);
+	void HideMigrationOverlay();
+	/** True while crash recovery / successor takeover should keep the MW2-style overlay. */
+	bool IsHostMigrationInFlight(const FString& WorldId) const;
+
 private:
+	void HandleActorsInitialized(const UWorld::FActorsInitializedParams& Params);
+	void RetryShowMenuPanel();
+	bool TryShowMenuPanel(UWorld* World);
 	FSharedWorldRuntime* FindOrCreateRuntime(const sw::WorldEntry& Entry);
 	FSharedWorldRuntime* FindRuntime(const FString& WorldId);
+	/** Re-open repository/object store when settings provider changed (e.g. folder → GitHub). */
+	bool RebindRuntimeStorage(FSharedWorldRuntime& Runtime);
 	sw::WorldSession& EnsureSession(FSharedWorldRuntime& Runtime);
 	sw::Identity MyIdentity() const;
 	sw::ProviderEnvironment MakeEnvironment() const;
@@ -144,11 +251,17 @@ private:
 	sw::LocalSettings Settings;
 	std::shared_ptr<sw::IHttpClient> Http;
 	std::shared_ptr<sw::ICredentialStore> Credentials;
+	sw::SystemClock AuthClock; // must outlive GitHubAuth
+	std::shared_ptr<sw::GitHubAuthService> GitHubAuth;
 	std::shared_ptr<sw::ILogSink> LogSink;
 	std::shared_ptr<sw::MemoryLogSink> DiagnosticsSink; // last N lines for the diagnostics command
 	FString SettingsPath;
 	bool bSettingsReadOnly = false;
 	FString SettingsProblem;
+
+	TUniquePtr<class FSharedWorldDiscoveryService> DiscoveryService;
+	TUniquePtr<class FSharedWorldInviteService> InviteService;
+	TUniquePtr<class FSharedWorldCreationService> CreationService;
 
 	TMap<FString, TUniquePtr<FSharedWorldRuntime>> Runtimes;
 	/** Creation, history, membership and invites: network I/O kept off the game thread. */
@@ -165,6 +278,10 @@ private:
 	TObjectPtr<USharedWorldHostController> Host;
 	UPROPERTY()
 	TObjectPtr<USharedWorldJoinManager> Joiner;
+	UPROPERTY()
+	TObjectPtr<class USharedWorldNetworkQuality> NetworkQuality;
+	UPROPERTY()
+	TObjectPtr<class USharedWorldHostResponder> HostResponder;
 
 	/** The world currently being hosted or joined (only one game world at a time). */
 	FString ActiveWorldId;
@@ -174,10 +291,16 @@ private:
 
 	mutable FCriticalSection SignInMutex;
 	FSharedWorldSignIn SignIn;
+	std::shared_ptr<std::atomic<bool>> SignInCancel = std::make_shared<std::atomic<bool>>(false);
 
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle TearDownHandle;
 	FDelegateHandle NetworkFailureHandle;
+	FDelegateHandle ActorsInitializedHandle;
 	TWeakObjectPtr<UWorld> MenuWorld;
+	TWeakObjectPtr<class USharedWorldPanel> MenuPanel;
+	TWeakObjectPtr<class USharedWorldMigrationOverlay> MigrationOverlay;
+	FString LastOverlayMessage;
 	double LastSummaryRefresh = 0.0;
+	double LastPauseInjectAttempt = 0.0;
 };

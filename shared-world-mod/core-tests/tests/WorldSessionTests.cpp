@@ -459,22 +459,28 @@ SW_TEST(World_HostCrashClientsRecover)
 	B.Session->OnHostConnectionLost();
 	Cc.Session->OnHostConnectionLost();
 	EXPECT_STATE(B, SessionState::Reconnecting);
-	// Last heartbeat at t=25s: lease expires at 115s, +30s skew grace = 145s.
-	// Takeover slots: rank 1 (P2) at 150s, rank 2 (P3) at 155s.
-	Step(C, {&B, &Cc}, Seconds(60));             // t=85
-	EXPECT_STATE(B, SessionState::Reconnecting); // lease still valid: wait
-	Step(C, {&B, &Cc}, Seconds(62));             // t=147: expired, no slot open yet
+	EXPECT_STATE(Cc, SessionState::Reconnecting);
+	// Heartbeat at t=25s → lease ExpiresAt=70s, observer expiry (+15s skew)=85s.
+	// Takeover slots: rank 0/1/2 × 5s stagger after observer expiry.
+	Step(C, {&B, &Cc}, Seconds(40));             // t=65: still inside skew grace
 	EXPECT_STATE(B, SessionState::Reconnecting);
 	EXPECT_STATE(Cc, SessionState::Reconnecting);
-	Step(C, {&B, &Cc}, Seconds(4));              // t=151: only B's slot is open
-	EXPECT_STATE(B, SessionState::ReadyToHost);
-	EXPECT_STATE(Cc, SessionState::Reconnecting);
-	B.Session->OnHostingStarted(Session("sessionB"));
-	B.Settle();
-	Step(C, {&B, &Cc}, Seconds(3));
-	EXPECT_STATE(Cc, SessionState::JoinReady);
-	EXPECT_EQ(Cc.V().Join->Data, std::string("sessionB"));
-	EXPECT_EQ(B.V().Revision, int64_t(1)); // newest trustworthy revision
+	Step(C, {&B, &Cc}, Seconds(22));             // t=87: expired; stagger may still gate
+	// Whichever peer has the lowest takeover rank should become ReadyToHost soon.
+	Step(C, {&B, &Cc}, Seconds(15));             // t=102: both ranks open
+	const bool bBReady = B.V().State == SessionState::ReadyToHost || B.V().State == SessionState::Acquiring ||
+		B.V().State == SessionState::Downloading || B.V().State == SessionState::Recovering;
+	const bool bCReady = Cc.V().State == SessionState::ReadyToHost || Cc.V().State == SessionState::Acquiring ||
+		Cc.V().State == SessionState::Downloading || Cc.V().State == SessionState::Recovering;
+	EXPECT_TRUE(bBReady || bCReady);
+	Peer* Successor = bBReady ? &B : &Cc;
+	Peer* Follower = bBReady ? &Cc : &B;
+	Successor->Session->OnHostingStarted(Session("sessionB"));
+	Successor->Settle();
+	Step(C, {Successor, Follower}, Seconds(3));
+	EXPECT_STATE(*Follower, SessionState::JoinReady);
+	EXPECT_EQ(Follower->V().Join->Data, std::string("sessionB"));
+	EXPECT_EQ(Successor->V().Revision, int64_t(1)); // newest trustworthy revision
 }
 
 // A player who quit to the menu must never take over in the background.

@@ -204,8 +204,10 @@ secondary limit; revisions every 10 min add 18/hour.
 * Local cache `%LOCALAPPDATA%/SatisfactorySharedWorld/cache/objects/…`
   holds verified objects; migration and restore reuse it. The cache never
   decides what is authoritative.
-* Retention (later): objects referenced by the last N revisions are kept;
-  older ones become deletable; conflict/recovery objects are never auto-deleted.
+* Retention: after each successful upload, revision metadata older than the keep
+  count (default 5) is deleted from the repo and unreferenced save objects are
+  removed from the object store / GitHub Releases. Conflict/recovery backups on
+  disk are never auto-deleted.
 
 ## 7. Recovery and migration
 

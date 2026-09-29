@@ -309,6 +309,7 @@ namespace sw
 			if (Update.Phase) L.Phase = *Update.Phase;
 			if (Update.ClearJoin) L.Join.reset();
 			else if (Update.Join) L.Join = Update.Join;
+			if (Update.HostReady) L.bHostReady = *Update.HostReady;
 			if (Update.Players) L.Players = *Update.Players;
 			M.Message = std::string("Heartbeat: generation ") + std::to_string(Token.Generation) + " (" + ToString(L.Phase) + ")";
 			return {};

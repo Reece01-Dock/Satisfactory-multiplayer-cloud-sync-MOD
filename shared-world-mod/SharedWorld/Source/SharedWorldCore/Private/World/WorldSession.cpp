@@ -16,13 +16,23 @@ namespace sw
 		case SessionState::Idle: return "IDLE";
 		case SessionState::Checking: return "CHECKING";
 		case SessionState::WaitingForHost: return "WAITING_FOR_HOST";
+		case SessionState::WaitingForSession: return "WAITING_FOR_SESSION";
+		case SessionState::CheckingHost: return "CHECKING_HOST";
+		case SessionState::HostVerified: return "HOST_VERIFIED";
+		case SessionState::HostUnreachable: return "HOST_UNREACHABLE";
 		case SessionState::JoinReady: return "JOIN_READY";
+		case SessionState::Joining: return "JOINING";
+		case SessionState::JoinRetry: return "JOIN_RETRY";
 		case SessionState::Joined: return "JOINED";
 		case SessionState::Reconnecting: return "RECONNECTING";
+		case SessionState::RecoveringHost: return "RECOVERING_HOST";
+		case SessionState::ElectingHost: return "ELECTING_HOST";
 		case SessionState::Acquiring: return "ACQUIRING";
 		case SessionState::Recovering: return "RECOVERING";
 		case SessionState::Downloading: return "DOWNLOADING";
 		case SessionState::ReadyToHost: return "READY_TO_HOST";
+		case SessionState::StartingSession: return "STARTING_SESSION";
+		case SessionState::PublishingSession: return "PUBLISHING_SESSION";
 		case SessionState::Hosting: return "HOSTING";
 		case SessionState::Uploading: return "UPLOADING";
 		case SessionState::Migrating: return "MIGRATING";
@@ -45,18 +55,57 @@ namespace sw
 			switch (From)
 			{
 			case S::Idle: return To == S::Checking || To == S::Restoring;
-			case S::Checking: return To == S::WaitingForHost || To == S::JoinReady || To == S::Acquiring || To == S::Error;
-			case S::WaitingForHost: return To == S::JoinReady || To == S::Checking || To == S::Acquiring || To == S::Error || To == S::Idle;
-			case S::JoinReady: return To == S::Idle || To == S::Joined || To == S::Checking || To == S::Reconnecting || To == S::Error;
-			case S::Joined: return To == S::JoinReady || To == S::Reconnecting || To == S::Acquiring || To == S::Idle;
-			case S::Reconnecting: return To == S::JoinReady || To == S::Acquiring || To == S::Idle || To == S::Error;
-			case S::Acquiring: return To == S::Checking || To == S::Recovering || To == S::Downloading || To == S::ReadyToHost || To == S::Error || To == S::LeaseLost || To == S::WaitingForHost || To == S::JoinReady;
+			case S::Checking:
+				return To == S::WaitingForHost || To == S::WaitingForSession || To == S::CheckingHost || To == S::JoinReady ||
+					To == S::Acquiring || To == S::ElectingHost || To == S::Error;
+			case S::WaitingForHost:
+				return To == S::WaitingForSession || To == S::CheckingHost || To == S::JoinReady || To == S::Checking ||
+					To == S::Acquiring || To == S::ElectingHost || To == S::Error || To == S::Idle;
+			case S::WaitingForSession:
+				return To == S::CheckingHost || To == S::WaitingForHost || To == S::JoinReady || To == S::Checking ||
+					To == S::Acquiring || To == S::Error || To == S::Idle;
+			case S::CheckingHost:
+				return To == S::HostVerified || To == S::HostUnreachable || To == S::JoinReady || To == S::WaitingForSession ||
+					To == S::JoinRetry || To == S::RecoveringHost || To == S::Error || To == S::Idle;
+			case S::HostVerified: return To == S::JoinReady || To == S::Joining || To == S::RecoveringHost || To == S::JoinRetry || To == S::Error || To == S::Idle;
+			case S::HostUnreachable:
+				return To == S::JoinRetry || To == S::CheckingHost || To == S::RecoveringHost || To == S::WaitingForHost ||
+					To == S::ElectingHost || To == S::Acquiring || To == S::Error || To == S::Idle;
+			case S::JoinReady:
+				return To == S::Idle || To == S::Joining || To == S::Joined || To == S::Checking || To == S::CheckingHost ||
+					To == S::JoinRetry || To == S::Reconnecting || To == S::Error;
+			case S::Joining:
+				return To == S::Joined || To == S::JoinRetry || To == S::JoinReady || To == S::HostUnreachable ||
+					To == S::RecoveringHost || To == S::Reconnecting || To == S::Error || To == S::Idle;
+			case S::JoinRetry:
+				return To == S::CheckingHost || To == S::JoinReady || To == S::Joining || To == S::WaitingForSession ||
+					To == S::RecoveringHost || To == S::Error || To == S::Idle;
+			case S::Joined:
+				return To == S::JoinReady || To == S::Reconnecting || To == S::RecoveringHost || To == S::Acquiring || To == S::Idle;
+			case S::Reconnecting:
+				return To == S::JoinReady || To == S::CheckingHost || To == S::RecoveringHost || To == S::ElectingHost ||
+					To == S::Acquiring || To == S::Idle || To == S::Error;
+			case S::RecoveringHost:
+				return To == S::CheckingHost || To == S::JoinReady || To == S::ElectingHost || To == S::Acquiring ||
+					To == S::Reconnecting || To == S::Error || To == S::Idle;
+			case S::ElectingHost:
+				return To == S::Acquiring || To == S::Checking || To == S::WaitingForHost || To == S::Error || To == S::Idle;
+			case S::Acquiring:
+				return To == S::Checking || To == S::Recovering || To == S::Downloading || To == S::ReadyToHost ||
+					To == S::Error || To == S::LeaseLost || To == S::WaitingForHost || To == S::WaitingForSession ||
+					To == S::JoinReady || To == S::CheckingHost;
 			case S::Recovering: return To == S::Downloading || To == S::ReadyToHost || To == S::Error || To == S::LeaseLost;
 			case S::Downloading: return To == S::ReadyToHost || To == S::Error || To == S::LeaseLost;
-			case S::ReadyToHost: return To == S::Hosting || To == S::Releasing || To == S::Error || To == S::LeaseLost;
-			case S::Hosting: return To == S::Uploading || To == S::Migrating || To == S::LeaseLost || To == S::Error;
-			case S::Uploading: return To == S::Hosting || To == S::Releasing || To == S::Migrating || To == S::LeaseLost || To == S::Error;
-			case S::Migrating: return To == S::Uploading || To == S::Releasing || To == S::Hosting || To == S::LeaseLost || To == S::Error;
+			case S::ReadyToHost:
+				return To == S::StartingSession || To == S::PublishingSession || To == S::Hosting || To == S::Releasing ||
+					To == S::Error || To == S::LeaseLost;
+			case S::StartingSession:
+				return To == S::PublishingSession || To == S::Hosting || To == S::Releasing || To == S::Error || To == S::LeaseLost || To == S::Idle;
+			case S::PublishingSession:
+				return To == S::Hosting || To == S::Releasing || To == S::Error || To == S::LeaseLost || To == S::Idle;
+			case S::Hosting: return To == S::Uploading || To == S::Migrating || To == S::LeaseLost || To == S::Error || To == S::Idle;
+			case S::Uploading: return To == S::Hosting || To == S::Releasing || To == S::Migrating || To == S::LeaseLost || To == S::Error || To == S::Idle;
+			case S::Migrating: return To == S::Uploading || To == S::Releasing || To == S::Hosting || To == S::LeaseLost || To == S::Error || To == S::Idle;
 			case S::Releasing: return To == S::Idle || To == S::Error;
 			case S::Restoring: return To == S::Idle || To == S::Error;
 			case S::LeaseLost: return To == S::Idle;
@@ -132,7 +181,8 @@ namespace sw
 
 	bool WorldSession::IsLeaseState(SessionState St) const
 	{
-		return St == S::Acquiring || St == S::Recovering || St == S::Downloading || St == S::ReadyToHost || St == S::Hosting || St == S::Uploading || St == S::Migrating;
+		return St == S::Acquiring || St == S::Recovering || St == S::Downloading || St == S::ReadyToHost ||
+			St == S::StartingSession || St == S::PublishingSession || St == S::Hosting || St == S::Uploading || St == S::Migrating;
 	}
 
 	// ------------------------------------------------------------ view helpers (lock held)
@@ -261,11 +311,13 @@ namespace sw
 	void WorldSession::Cancel()
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
-		if (Current.State == S::WaitingForHost || Current.State == S::Reconnecting)
+		if (Current.State == S::WaitingForHost || Current.State == S::WaitingForSession || Current.State == S::CheckingHost ||
+			Current.State == S::HostUnreachable || Current.State == S::JoinRetry || Current.State == S::RecoveringHost ||
+			Current.State == S::Reconnecting || Current.State == S::Joining)
 		{
 			Set(S::Idle, "Cancelled.");
 		}
-		else if (Current.State == S::ReadyToHost)
+		else if (Current.State == S::ReadyToHost || Current.State == S::StartingSession || Current.State == S::PublishingSession)
 		{
 			Set(S::Releasing, "Cancelling...");
 			Ops.Post([this]() { DoRelease("Cancelled.", std::nullopt); });
@@ -298,7 +350,11 @@ namespace sw
 	{
 		auto Snap = Leases->Store().Load();
 		std::unique_lock<std::mutex> Lock(Mutex);
-		if (Current.State != S::Checking && Current.State != S::WaitingForHost) return; // cancelled
+		if (Current.State != S::Checking && Current.State != S::WaitingForHost && Current.State != S::WaitingForSession &&
+			Current.State != S::JoinRetry && Current.State != S::RecoveringHost && Current.State != S::HostUnreachable)
+		{
+			return; // cancelled
+		}
 		if (!Snap)
 		{
 			if (Snap.Is(ErrorCode::NoWorld))
@@ -342,6 +398,16 @@ namespace sw
 		if (St.CurrentLease && Leases->LiveForObserver(St.CurrentLease, Now))
 		{
 			const Lease& L = *St.CurrentLease;
+			// After a failed join / verify, wait for the dead host's lease to
+			// expire instead of looping join attempts against a crashed session.
+			if (Current.State == S::RecoveringHost && !L.Holder.SamePlayerOrInstall(Cfg.Me))
+			{
+				Current.HostName = L.Holder.DisplayName;
+				FollowGeneration = L.Generation;
+				LastSeenPlayers = L.Players;
+				Note("HOST MIGRATION — waiting for " + L.Holder.DisplayName + "'s lock to expire...");
+				return;
+			}
 			if (L.Holder.SamePlayerOrInstall(Cfg.Me))
 			{
 				const bool bOurCrashedSession = Local.ActiveLease && Local.ActiveLease->Generation == L.Generation && Local.ActiveLease->Nonce == L.Nonce;
@@ -365,38 +431,42 @@ namespace sw
 			Current.TheDecision = Decision::Join;
 			Current.Revision = St.HeadNumber();
 			LastSeenPlayers = L.Players;
-			if (L.Join)
+			FollowGeneration = L.Generation;
+
+			if (!L.IsJoinable())
 			{
-				Current.Join = L.Join;
-				FollowGeneration = L.Generation;
-				Set(S::JoinReady, "Joining " + L.Holder.DisplayName + "...");
-				Leases->Store().Log().Info("PlayerJoinStarted", {{"world", Current.WorldId}, {"host", L.Holder.PlayerId}, {"generation", std::to_string(L.Generation)}});
+				if (Current.State != S::WaitingForHost && Current.State != S::WaitingForSession)
+				{
+					WaitDeadline = Now + Cfg.JoinWaitTimeout;
+				}
+				if (L.Phase == LeasePhase::Hosting && !L.bHostReady)
+				{
+					Set(S::WaitingForSession, L.Holder.DisplayName + " is finishing session setup...");
+				}
+				else
+				{
+					Set(S::WaitingForHost, L.Holder.DisplayName + " is starting the world...");
+				}
+				if (Now > WaitDeadline)
+				{
+					ErrorInfo E;
+					E.Code = "HOST_NOT_READY";
+					E.Message = L.Holder.DisplayName + " is still starting the world. Try again in a moment.";
+					E.bRetryable = true;
+					Fail(E);
+				}
 				return;
 			}
-			if (L.Phase == LeasePhase::Hosting)
-			{
-				FollowGeneration = L.Generation;
-				Set(S::JoinReady, L.Holder.DisplayName + " is hosting. Join them from the Satisfactory friends list.");
-				return;
-			}
-			if (Current.State != S::WaitingForHost)
-			{
-				WaitDeadline = Now + Cfg.JoinWaitTimeout;
-				Set(S::WaitingForHost, L.Holder.DisplayName + " is starting the world...");
-			}
-			else if (Now > WaitDeadline)
-			{
-				ErrorInfo E;
-				E.Code = "HOST_NOT_READY";
-				E.Message = L.Holder.DisplayName + " is still starting the world. Try again in a moment.";
-				E.bRetryable = true;
-				Fail(E);
-			}
+
+			Current.Join = L.Join;
+			EnterJoinPath(L, St.HeadNumber(), "Checking host " + L.Holder.DisplayName + "...");
+			Lock.unlock();
+			ScheduleHostVerify(*Snap);
 			return;
 		}
 		if (St.PendingHandoff && Now < St.PendingHandoff->ExpiresAt && St.PendingHandoff->Successor.PlayerId != Cfg.Me.PlayerId)
 		{
-			if (Current.State != S::WaitingForHost)
+			if (Current.State != S::WaitingForHost && Current.State != S::WaitingForSession)
 			{
 				WaitDeadline = Now + Cfg.JoinWaitTimeout;
 				Current.TheDecision = Decision::Join;
@@ -407,6 +477,137 @@ namespace sw
 		Set(S::Acquiring, St.CurrentLease ? "Previous host stopped responding. Acquiring host..." : "Nobody is playing. Acquiring host...");
 		Lock.unlock();
 		DoHost(*Snap);
+	}
+
+	void WorldSession::EnterJoinPath(const Lease& L, int64_t /*HeadRevision*/, const std::string& Message)
+	{
+		// Lock held by caller.
+		HostVerifyAttempts = 0;
+		HostVerifyDeadline = Leases->Store().Clock().Now() + Cfg.HostVerifyTimeout;
+		if (Cfg.HostVerifier)
+		{
+			Set(S::CheckingHost, Message.empty() ? ("Checking host " + L.Holder.DisplayName + "...") : Message);
+		}
+		else if (L.Join)
+		{
+			Set(S::JoinReady, "Connecting to " + L.Holder.DisplayName + "...");
+			Leases->Store().Log().Info("PlayerJoinStarted", {{"world", Current.WorldId}, {"host", L.Holder.PlayerId}, {"generation", std::to_string(L.Generation)}});
+		}
+		else
+		{
+			Set(S::JoinReady, L.Holder.DisplayName + " is hosting. Join them from the Satisfactory friends list.");
+		}
+	}
+
+	void WorldSession::ScheduleHostVerify(const StateSnapshot& Snap)
+	{
+		if (!Cfg.HostVerifier || bVerifyInFlight.exchange(true)) return;
+		Ops.Post([this, Snap]()
+		{
+			DoVerifyHost(Snap);
+			bVerifyInFlight = false;
+		});
+	}
+
+	void WorldSession::DoVerifyHost(StateSnapshot Snap)
+	{
+		std::unique_lock<std::mutex> Lock(Mutex);
+		if (Current.State != S::CheckingHost && Current.State != S::JoinRetry && Current.State != S::HostUnreachable) return;
+		if (!Cfg.HostVerifier)
+		{
+			Set(S::JoinReady, Current.Join ? ("Connecting to " + Current.HostName + "...") : (Current.HostName + " is hosting. Join them from the Satisfactory friends list."));
+			return;
+		}
+		if (!Snap.State.CurrentLease || !Leases->LiveForObserver(Snap.State.CurrentLease, Leases->Store().Clock().Now()))
+		{
+			Set(S::RecoveringHost, "HOST MIGRATION — recovering Shared World...");
+			Lock.unlock();
+			DoCheckAndDecide();
+			return;
+		}
+		const Lease L = *Snap.State.CurrentLease;
+		if (!L.IsJoinable())
+		{
+			Set(S::WaitingForSession, L.Holder.DisplayName + " is starting the world...");
+			return;
+		}
+		Current.Join = L.Join;
+		JoinInfo Join = L.Join.value_or(JoinInfo{"online-session-id", "", ""});
+		const std::string Nonce = NewNonce();
+		const TimeMs Now = Leases->Store().Clock().Now();
+		SharedWorldHello Hello = MakeHello(Cfg.Me, Current.WorldId, L, Snap.State.HeadNumber(), Nonce, Now);
+		++HostVerifyAttempts;
+		Lock.unlock();
+
+		HostVerifyResult VR = Cfg.HostVerifier->Probe(Hello, Join, Cfg.HostVerifyProbeTimeout);
+
+		Lock.lock();
+		if (Current.State != S::CheckingHost && Current.State != S::JoinRetry && Current.State != S::HostUnreachable) return;
+
+		// Re-read cloud authority after the probe: verification never grants hosting,
+		// and a takeover during the wait must cancel join.
+		{
+			Lock.unlock();
+			auto Latest = Leases->Store().Load();
+			Lock.lock();
+			if (!Latest || !Latest->State.CurrentLease ||
+				!Leases->LiveForObserver(Latest->State.CurrentLease, Leases->Store().Clock().Now()) ||
+				Latest->State.CurrentLease->Generation != L.Generation ||
+				Latest->State.CurrentLease->Holder.PlayerId != L.Holder.PlayerId)
+			{
+				Set(S::RecoveringHost, "HOST MIGRATION — checking Shared World...");
+				Lock.unlock();
+				DoCheckAndDecide();
+				return;
+			}
+		}
+
+		auto RetryOrRecover = [&](const std::string& PlayerMessage, const std::string& Detail)
+		{
+			Leases->Store().Log().Warn("HostVerifyFailed", {{"world", Current.WorldId}, {"host", L.Holder.PlayerId},
+				{"generation", std::to_string(L.Generation)}, {"outcome", ToString(VR.Outcome)}, {"detail", Detail},
+				{"attempt", std::to_string(HostVerifyAttempts)}});
+			const TimeMs T = Leases->Store().Clock().Now();
+			if (T < HostVerifyDeadline && Leases->LiveForObserver(Snap.State.CurrentLease, T))
+			{
+				Set(S::JoinRetry, PlayerMessage);
+				return;
+			}
+			Set(S::RecoveringHost, "HOST MIGRATION — waiting for the Shared World to become available...");
+			// Do not break the lease: wait for expiry via normal poll / reconnect path.
+		};
+
+		if (VR.Outcome == HostVerifyOutcome::Timeout || VR.Outcome == HostVerifyOutcome::Unreachable || VR.Outcome == HostVerifyOutcome::Unsupported)
+		{
+			RetryOrRecover("Could not reach " + L.Holder.DisplayName + ". Retrying...", VR.Detail.empty() ? ToString(VR.Outcome) : VR.Detail);
+			return;
+		}
+		if (!VR.Ack)
+		{
+			RetryOrRecover("Could not reach " + L.Holder.DisplayName + ". Retrying...", "empty ack");
+			return;
+		}
+		SharedWorldHelloAck Ack = *VR.Ack;
+		if (Ack.HostPlayerId.empty()) Ack.HostPlayerId = L.Holder.PlayerId;
+		if (Status V = ValidateHelloAck(Hello, Ack, L, Snap.State.HeadNumber(), L.Join); !V)
+		{
+			VR.Outcome = HostVerifyOutcome::Mismatch;
+			RetryOrRecover("The host session did not match the Shared World. Retrying...", V.Err().Describe());
+			return;
+		}
+		Set(S::HostVerified, "Host verified. Connecting to " + L.Holder.DisplayName + "...");
+		if (L.Join)
+		{
+			Current.Join = L.Join;
+			Set(S::JoinReady, "Connecting to " + L.Holder.DisplayName + "...");
+			Leases->Store().Log().Info("HostVerified", {{"world", Current.WorldId}, {"host", L.Holder.PlayerId},
+				{"generation", std::to_string(L.Generation)}, {"revision", std::to_string(Snap.State.HeadNumber())}});
+		}
+		else
+		{
+			Current.Join.reset();
+			Set(S::JoinReady, L.Holder.DisplayName + " is hosting. Join them from the Satisfactory friends list.");
+		}
 	}
 
 	// ------------------------------------------------------------ host path
@@ -619,7 +820,7 @@ namespace sw
 		std::optional<LeaseToken> Tok;
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
-			if (Current.State != S::ReadyToHost || !Token) return;
+			if ((Current.State != S::ReadyToHost && Current.State != S::StartingSession && Current.State != S::PublishingSession) || !Token) return;
 			PublishedJoin = Join;
 			Tok = Token;
 		}
@@ -627,6 +828,7 @@ namespace sw
 		{
 			LeaseUpdate U;
 			U.Phase = LeasePhase::Hosting;
+			U.HostReady = true;
 			if (Join) U.Join = Join;
 			else U.ClearJoin = true;
 			auto R = Leases->Renew(*Tok, U);
@@ -642,10 +844,25 @@ namespace sw
 			}
 			else
 			{
-				Leases->Store().Log().Info("HostSessionPublished", {{"world", Current.WorldId}, {"generation", std::to_string(Tok->Generation)}, {"join", Join ? Join->Kind : "none"}});
+				Leases->Store().Log().Info("HostSessionPublished", {{"world", Current.WorldId}, {"generation", std::to_string(Tok->Generation)},
+					{"join", Join ? Join->Kind : "none"}, {"hostReady", "true"}});
 			}
 			Set(S::Hosting, "Hosting Shared World");
 		});
+	}
+
+	void WorldSession::OnHostLoadStarted()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (Current.State != S::ReadyToHost || !Token) return;
+		Set(S::StartingSession, "Loading Shared World...");
+	}
+
+	void WorldSession::OnHostPublishingSession()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if ((Current.State != S::ReadyToHost && Current.State != S::StartingSession) || !Token) return;
+		Set(S::PublishingSession, "Publishing multiplayer session...");
 	}
 
 	void WorldSession::SetPlayers(std::vector<SessionPlayer> InPlayers)
@@ -661,7 +878,10 @@ namespace sw
 		PendingSuccessor = Successor;
 		Current.Successor = Successor;
 		Leases->Store().Log().Info("HostMigrationStarted", {{"world", Current.WorldId}, {"successor", Successor.PlayerId}});
-		Set(S::Migrating, "Host migration starting... Saving world...");
+		Set(S::Migrating, "HOST MIGRATION — saving world for " + Successor.DisplayName + "...");
+		// Publish Migrating on the lease immediately so clients can show the overlay
+		// before the host session tears down (don't wait for the next heartbeat).
+		LastHeartbeat = 0;
 	}
 
 	void WorldSession::OnSaveCompleted(SaveKind Kind)
@@ -686,11 +906,35 @@ namespace sw
 			Set(S::Uploading, "Uploading the last saved state of the Shared World...");
 			Ops.Post([this]() { DoUpload(SaveKind::Final, std::nullopt); });
 		}
+		else if (Current.State == S::Uploading)
+		{
+			// Already uploading (checkpoint/final mid-flight); let it finish.
+			return;
+		}
 		else if (Current.State == S::ReadyToHost)
 		{
 			Set(S::Releasing, "The world did not start. Releasing it...");
 			Ops.Post([this]() { DoRelease("Released.", std::nullopt); });
 		}
+	}
+
+	void WorldSession::AbandonOnProcessExit()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (Current.State == S::Idle || Current.State == S::Error)
+		{
+			return;
+		}
+		// Engine exit tears down HTTP; a Final upload here often hangs ~60s then fails.
+		// Keep the last successful cloud revision; lease expires without a clean release.
+		Leases->Store().Log().Warn("HostAbandonedOnProcessExit", {{"world", Leases->Store().WorldId()},
+			{"state", ToString(Current.State)}, {"revision", std::to_string(Current.Revision)}});
+		Token.reset();
+		PersistActiveLease(std::nullopt);
+		PendingSuccessor.reset();
+		Current.Successor.reset();
+		Current.Steps.clear();
+		Set(S::Idle, "Game exited while hosting. Cloud lease will expire.");
 	}
 
 	void WorldSession::DoUpload(SaveKind Kind, std::optional<Identity> Successor)
@@ -799,11 +1043,15 @@ namespace sw
 			{
 			case S::Hosting:
 				U.Phase = LeasePhase::Hosting;
+				U.HostReady = true;
 				if (PublishedJoin) U.Join = PublishedJoin;
 				break;
-			case S::Uploading: U.Phase = LeasePhase::Saving; break;
-			case S::Migrating: U.Phase = LeasePhase::Migrating; break;
-			default: U.Phase = LeasePhase::Preparing; break;
+			case S::Uploading: U.Phase = LeasePhase::Saving; U.HostReady = true; break;
+			case S::Migrating: U.Phase = LeasePhase::Migrating; U.HostReady = false; break;
+			default:
+				U.Phase = LeasePhase::Preparing;
+				U.HostReady = false;
+				break;
 			}
 			U.Players = Players;
 		}
@@ -822,22 +1070,33 @@ namespace sw
 	void WorldSession::OnJoinedAsClient()
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
-		if (Current.State == S::JoinReady) Set(S::Joined, "Playing in " + Current.HostName + "'s Shared World.");
+		if (Current.State == S::JoinReady || Current.State == S::Joining) Set(S::Joined, "Playing in " + Current.HostName + "'s Shared World.");
+	}
+
+	void WorldSession::OnJoinStarted()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (Current.State == S::JoinReady) Set(S::Joining, "Connecting to " + Current.HostName + "...");
 	}
 
 	void WorldSession::OnJoinFailed(const std::string& Reason)
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
-		if (Current.State != S::JoinReady) return;
-		Leases->Store().Log().Warn("PlayerJoinFailed", {{"world", Current.WorldId}, {"reason", Reason}});
-		if (FollowGeneration > 0 && Current.Steps.size() > 0 && Current.Message.find("Reconnecting") == 0)
+		if (Current.State != S::JoinReady && Current.State != S::Joining && Current.State != S::CheckingHost &&
+			Current.State != S::HostVerified)
 		{
-			// Part of a migration / recovery: keep following.
+			return;
+		}
+		Leases->Store().Log().Warn("PlayerJoinFailed", {{"world", Current.WorldId}, {"reason", Reason}});
+		// We were following a live lease (Play join or reconnect). The host's
+		// Steam session is gone / crashed: wait for lease expiry, then take over.
+		if (FollowGeneration > 0)
+		{
 			const TimeMs Now = Leases->Store().Clock().Now();
 			ConnectionLostAt = Now;
 			TakeoverNotBefore = Now + Cfg.TakeoverStagger * TakeoverRank(LastSeenPlayers, {}, Cfg.Me.PlayerId);
 			WaitDeadline = Now + Cfg.JoinWaitTimeout * 2;
-			Set(S::Reconnecting, "Could not reach the host. Waiting...");
+			Set(S::RecoveringHost, "HOST MIGRATION — waiting to take over...");
 			return;
 		}
 		ErrorInfo E;
@@ -857,7 +1116,7 @@ namespace sw
 		TakeoverNotBefore = Now + Cfg.TakeoverStagger * Rank;
 		ConnectionLostAt = Now;
 		WaitDeadline = Now + Cfg.JoinWaitTimeout * 2;
-		Set(S::Reconnecting, "HOST CONNECTION LOST. Recovering Shared World...");
+		Set(S::Reconnecting, "HOST MIGRATION — selecting a new host...");
 	}
 
 	void WorldSession::OnLeftAsClient()
@@ -883,6 +1142,14 @@ namespace sw
 		{
 			const Lease& L = *St.CurrentLease;
 			LastSeenPlayers = L.Players;
+			if (L.Phase == LeasePhase::Migrating)
+			{
+				// Host is leaving on purpose — stay Joined until the session drops,
+				// but surface migration copy so the UE overlay can show progress.
+				Current.HostName = L.Holder.DisplayName;
+				Note("HOST MIGRATION — " + L.Holder.DisplayName + " is handing off the Shared World...");
+				return;
+			}
 			if (L.Generation != FollowGeneration && L.Join)
 			{
 				// Someone else is host now (migration / recovery): reconnect.
@@ -1058,6 +1325,10 @@ namespace sw
 		switch (Current.State)
 		{
 		case S::WaitingForHost:
+		case S::WaitingForSession:
+		case S::JoinRetry:
+		case S::RecoveringHost:
+		case S::HostUnreachable:
 			LastPoll = Now;
 			bPollInFlight = true;
 			Ops.Post([this]() { DoCheckAndDecide(); bPollInFlight = false; });
@@ -1138,7 +1409,18 @@ namespace sw
 				case LeasePhase::Saving: Sum.Status = WorldStatus::Saving; Sum.StatusText = "Online (saving)"; break;
 				case LeasePhase::Stopping: Sum.Status = WorldStatus::Stopping; Sum.StatusText = L.Holder.DisplayName + " is closing the world"; break;
 				case LeasePhase::Migrating: Sum.Status = WorldStatus::Migrating; Sum.StatusText = "Host migration in progress"; break;
-				default: Sum.Status = WorldStatus::Online; Sum.StatusText = "Online"; break;
+				default:
+					if (!L.bHostReady)
+					{
+						Sum.Status = WorldStatus::Starting;
+						Sum.StatusText = L.Holder.DisplayName + " is starting the world";
+					}
+					else
+					{
+						Sum.Status = WorldStatus::Online;
+						Sum.StatusText = "Online";
+					}
+					break;
 				}
 			}
 			else

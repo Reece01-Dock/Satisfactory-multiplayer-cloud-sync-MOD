@@ -34,10 +34,16 @@ namespace sw
 		explicit FakeClock(TimeMs Start) : Current(Start) {}
 		TimeMs Now() const override { return Current.load(); }
 		void Advance(TimeMs Delta) { Current += Delta; }
+		void Set(TimeMs T) { Current.store(T); }
 
 	private:
 		std::atomic<TimeMs> Current;
 	};
+
+	/** Test/simulator name for FakeClock (advance time instead of sleeping). */
+	using SimulatedClock = FakeClock;
+	/** Production alias kept explicit at call sites that inject the wall clock. */
+	using SharedWorldClock = SystemClock;
 
 	/** "2026-09-27T12:00:00.000Z" */
 	std::string FormatTime(TimeMs T);

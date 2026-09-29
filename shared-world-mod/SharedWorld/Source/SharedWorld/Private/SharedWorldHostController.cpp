@@ -1,30 +1,129 @@
 #include "SharedWorldHostController.h"
 
+#include "SharedWorldInviteBridge.h"
+
 #include "CommonSessionSubsystem.h"
 #include "CommonSessionTypes.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "FGSaveManagerInterface.h"
 #include "FGSaveSystem.h"
+#include "FGPlayerController.h"
+#include "UI/FGGameUI.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "LocalUserInfo.h"
+#include "Misc/CoreMisc.h"
+#include "Online/FGSessionSettings.h"
 #include "OnlineIntegrationState.h"
 #include "OnlineIntegrationSubsystem.h"
 #include "SessionInformation.h"
 #include "SessionMigrationSequence.h"
+#include "Sessions/SessionDefinition.h"
 #include "SharedWorldSubsystem.h"
+#include "SharedWorldUeConvert.h"
+
+using SharedWorldUe::Std;
 
 namespace
 {
 	/** How long to wait for the hosted online session to appear before publishing without join data. */
 	constexpr double PublishTimeoutSeconds = 90.0;
 	/** Interval between checkpoint uploads while hosting. */
-	constexpr float CheckpointIntervalSeconds = 15.0f * 60.0f;
+	constexpr float CheckpointIntervalSeconds = 5.0f * 60.0f; // safer loss window than 15m; still waits for SaveGame completion
 
-	std::string Std(const FString& S) { return TCHAR_TO_UTF8(*S); }
+	/**
+	 * LoadSaveFile hosts with whatever UFGSessionSettings currently has selected.
+	 * The front-end often leaves that on SessionDef_SinglePlayer (no ?listen), which
+	 * produces a single-player game. Prefer a session definition that creates an
+	 * online session so friends can join (SessionDef_Steam / EOS / IP, etc.).
+	 */
+	USessionDefinition* PickHostingSessionDefinition(UOnlineIntegrationState* State, UFGSessionSettings* Settings)
+	{
+		if (!State)
+		{
+			return nullptr;
+		}
+		if (Settings)
+		{
+			if (USessionDefinition* Current = Settings->GetCurrentSessionDefinition())
+			{
+				if (Current->bCreateOnlineSession)
+				{
+					return Current;
+				}
+			}
+		}
+		static const FName Preferred[] = {
+			FName(TEXT("SessionDef_Steam")),
+			FName(TEXT("SessionDef_EOS")),
+			FName(TEXT("SessionDef_Epic")),
+			FName(TEXT("SessionDef_EOSPlus")),
+			FName(TEXT("SessionDef_CrossPlay")),
+			FName(TEXT("SessionDef_Friends")),
+			FName(TEXT("SessionDef_Private")),
+			FName(TEXT("SessionDef_IP")),
+		};
+		for (const FName& Name : Preferred)
+		{
+			if (USessionDefinition* Def = State->GetSessionDefinitionByName(Name))
+			{
+				if (Def->bCreateOnlineSession)
+				{
+					return Def;
+				}
+			}
+		}
+		for (USessionDefinition* Def : State->GetSessionDefinitions())
+		{
+			if (Def && Def->bCreateOnlineSession)
+			{
+				return Def;
+			}
+		}
+		return nullptr;
+	}
+
+	bool EnsureHostingSessionDefinition(UWorld* MenuWorld)
+	{
+		UGameInstance* GI = MenuWorld ? MenuWorld->GetGameInstance() : nullptr;
+		UOnlineIntegrationSubsystem* Online = GI ? GI->GetSubsystem<UOnlineIntegrationSubsystem>() : nullptr;
+		UOnlineIntegrationState* State = Online ? Online->GetOnlineIntegrationState() : nullptr;
+		UFGSessionSettings* Settings = GI ? GI->GetSubsystem<UFGSessionSettings>() : nullptr;
+		USessionDefinition* Def = PickHostingSessionDefinition(State, Settings);
+		if (!Def || !Settings)
+		{
+			UE_LOG(LogSharedWorld, Error,
+				TEXT("[SharedWorld] event=host_session_def_missing reason=\"no multiplayer SessionDefinition available\""));
+			return false;
+		}
+		if (Settings->GetCurrentSessionDefinition() == Def)
+		{
+			UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_session_def name=%s already_current=1"), *Def->GetName());
+			return true;
+		}
+		// UFGSessionSettingsModel is not FACTORYGAME_API, so SetSessionDefinition/ApplySettingsModel
+		// cannot be linked from a mod. Write the transient current definition the same way the
+		// settings UI would after Apply.
+		FObjectProperty* CurrentProp = FindFProperty<FObjectProperty>(
+			UFGSessionSettings::StaticClass(), TEXT("mCurrentSessionDefinition"));
+		if (!CurrentProp)
+		{
+			UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_session_def_missing reason=\"mCurrentSessionDefinition not found\""));
+			return false;
+		}
+		CurrentProp->SetObjectPropertyValue(CurrentProp->ContainerPtrToValuePtr<void>(Settings), Def);
+		if (FNameProperty* NameProp = FindFProperty<FNameProperty>(
+				UFGSessionSettings::StaticClass(), TEXT("mSessionDefinitionName")))
+		{
+			NameProp->SetPropertyValue_InContainer(Settings, Def->GetFName());
+		}
+		const bool bOk = Settings->GetCurrentSessionDefinition() == Def;
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_session_def name=%s applied=%d"), *Def->GetName(), bOk ? 1 : 0);
+		return bOk;
+	}
 }
 
 void USharedWorldHostController::Init(USharedWorldSubsystem* InOwner)
@@ -36,12 +135,24 @@ void USharedWorldHostController::Reset()
 {
 	FTSTicker::GetCoreTicker().RemoveTicker(PublishTicker);
 	FTSTicker::GetCoreTicker().RemoveTicker(CheckpointTicker);
+	if (ASharedWorldInviteBridge* Bridge = InviteBridge.Get())
+	{
+		Bridge->Destroy();
+	}
+	InviteBridge.Reset();
+	if (Owner)
+	{
+		Owner->NotifyHostResponderCleared();
+	}
 	GameWorld.Reset();
 	WorldId.Reset();
 	SaveName.Reset();
 	Session = nullptr;
 	bInGameWorld = bSessionPublished = bSaving = bWorldEnded = false;
 	LoadStartedAt = 0.0;
+	LastPauseSaveAt = 0.0;
+	TearDownAt = 0.0;
+	bPauseMenuWasOpen = false;
 }
 
 bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSession* InSession, const FString& InWorldId, const FString& SavePath)
@@ -64,6 +175,12 @@ bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSessio
 		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"could not read %s\""), *InWorldId, *SavePath);
 		return false;
 	}
+	// Without this, LoadSaveFile travels with SessionDef_SinglePlayer (no listen).
+	if (!EnsureHostingSessionDefinition(MenuWorld))
+	{
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"could not select a multiplayer session type\""), *InWorldId);
+		return false;
+	}
 	USessionMigrationSequence* Sequence = SaveSystem->LoadSaveFile(Header, FLoadSaveFileParameters(), PC);
 	if (!Sequence)
 	{
@@ -73,11 +190,12 @@ bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSessio
 	// UNVERIFIED (see STATUS.md): whether LoadSaveFile already starts the
 	// returned sequence. The sibling APIs document that the caller starts it.
 	const bool bStarted = Sequence->Start();
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_load_started world=%s save=%s sequence_start=%d"), *InWorldId, *LoadName, bStarted ? 1 : 0);
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/Host] event=host_load_started world=%s save=%s sequence_start=%d"), *InWorldId, *LoadName, bStarted ? 1 : 0);
 	Session = InSession;
 	WorldId = InWorldId;
 	SaveName = LoadName;
 	LoadStartedAt = FPlatformTime::Seconds();
+	Session->OnHostLoadStarted();
 	return true;
 }
 
@@ -98,9 +216,34 @@ void USharedWorldHostController::OnGameWorldReady(UWorld* World)
 	GameWorld = World;
 	bInGameWorld = true;
 	PublishDeadline = FPlatformTime::Seconds() + PublishTimeoutSeconds;
+	if (Session)
+	{
+		Session->OnHostPublishingSession();
+	}
 	PublishTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &USharedWorldHostController::TickPublishSession), 2.0f);
 	CheckpointTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &USharedWorldHostController::TickCheckpoint), CheckpointIntervalSeconds);
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_world_ready world=%s"), *WorldId);
+	(void)EnsureInviteBridge();
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/Host] event=host_world_ready world=%s"), *WorldId);
+}
+
+ASharedWorldInviteBridge* USharedWorldHostController::EnsureInviteBridge()
+{
+	if (ASharedWorldInviteBridge* Existing = InviteBridge.Get())
+	{
+		return Existing;
+	}
+	UWorld* World = GameWorld.Get();
+	if (!World || World->GetNetMode() == NM_Client)
+	{
+		return nullptr;
+	}
+	FActorSpawnParameters Params;
+	Params.Name = TEXT("SharedWorldInviteBridge");
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ASharedWorldInviteBridge* Bridge = World->SpawnActor<ASharedWorldInviteBridge>(
+		ASharedWorldInviteBridge::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	InviteBridge = Bridge;
+	return Bridge;
 }
 
 FString USharedWorldHostController::FindOnlineSessionId() const
@@ -146,13 +289,17 @@ void USharedWorldHostController::PublishSession(const FString& SessionId)
 		Join.Kind = "online-session-id";
 		Join.Data = Std(SessionId);
 		Session->OnHostingStarted(Join);
-		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=session_published world=%s"), *WorldId);
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/Host] event=session_published world=%s session_id_hash=%u"), *WorldId, GetTypeHash(SessionId));
 	}
 	else
 	{
-		// Friends are told to join via the in-game friends list instead.
 		Session->OnHostingStarted(std::nullopt);
-		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=session_id_unavailable world=%s"), *WorldId);
+		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld/Host] event=session_id_unavailable world=%s fallback=friends_list"), *WorldId);
+	}
+	if (Owner && Session)
+	{
+		const sw::SessionView V = Session->View();
+		Owner->NotifyHostResponderReady(WorldId, SessionId, V.Generation, V.Revision, static_cast<int32>(GetConnectedPlayers().size()));
 	}
 }
 
@@ -204,14 +351,18 @@ void USharedWorldHostController::OnSaveComplete(bool bSuccess, const FText& Erro
 	bSaving = false;
 	if (!bSuccess)
 	{
-		// Nothing is uploaded: the session only ever hears about completed saves.
 		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=save_failed world=%s error=\"%s\""), *WorldId, *ErrorMessage.ToString());
+		if (bWorldEnded && Session)
+		{
+			Session->OnWorldEnded();
+		}
 		return;
 	}
 	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=save_completed world=%s kind=%d"), *WorldId, static_cast<int32>(SavingKind));
-	Session->OnSaveCompleted(SavingKind);
-	// Session moves to UPLOADING and, on success, to RELEASING/IDLE for a
-	// Final save; the subsystem calls NotifyReleased() once it sees IDLE.
+	if (Session)
+	{
+		Session->OnSaveCompleted(SavingKind);
+	}
 }
 
 void USharedWorldHostController::OnWorldTearDown(UWorld* World)
@@ -220,22 +371,99 @@ void USharedWorldHostController::OnWorldTearDown(UWorld* World)
 	{
 		return;
 	}
-	// The world is going away without an explicit stop (exit to menu / quit).
-	// Progress since the last completed save cannot be saved any more; the
-	// session uploads the last completed shared save (read from disk, no
-	// game callback needed) and releases. If that upload is refused or the
-	// connection drops, the subsystem calls RetryPendingRelease() on later
-	// ticks until it lands (WorldId/Session are kept for exactly that).
-	UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=host_world_teardown_without_stop world=%s"), *WorldId);
+	const bool bWasSaving = bSaving;
+	UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=host_world_teardown world=%s engine_exit=%d saving=%d"),
+		*WorldId, IsEngineExitRequested() ? 1 : 0, bWasSaving ? 1 : 0);
 	FTSTicker::GetCoreTicker().RemoveTicker(PublishTicker);
 	FTSTicker::GetCoreTicker().RemoveTicker(CheckpointTicker);
+
 	bInGameWorld = false;
 	bWorldEnded = true;
+	TearDownAt = FPlatformTime::Seconds();
 	GameWorld.Reset();
-	if (Session)
+
+	if (!Session)
 	{
+		bSaving = false;
+		return;
+	}
+	const sw::SessionState St = Session->View().State;
+	const bool bNeedsRelease =
+		St == sw::SessionState::Hosting || St == sw::SessionState::Migrating || St == sw::SessionState::Uploading;
+
+	if (IsEngineExitRequested())
+	{
+		bSaving = false;
+		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=host_abandon_on_process_exit world=%s"), *WorldId);
+		Session->AbandonOnProcessExit();
+		Reset();
+		return;
+	}
+
+	// Never start a new SaveGame during teardown — the async callback often never
+	// fires and the lease stays open. If a pause/checkpoint SaveGame is already
+	// in flight, wait briefly for it (promoted to Final); otherwise upload the
+	// last on-disk save and release immediately.
+	if (bWasSaving && St == sw::SessionState::Hosting)
+	{
+		SavingKind = sw::SaveKind::Final;
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_leave_await_inflight_save world=%s"), *WorldId);
+		return;
+	}
+	bSaving = false;
+	if (bNeedsRelease)
+	{
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_leave_upload_last_save world=%s"), *WorldId);
 		Session->OnWorldEnded();
 	}
+}
+
+void USharedWorldHostController::OnPauseMenuOpened()
+{
+	// Esc/pause usually precedes Exit to Main Menu. Snapshot to disk while the
+	// world is still alive so OnWorldTearDown can upload something recent.
+	if (!bInGameWorld || bSaving || bWorldEnded || !Session)
+	{
+		return;
+	}
+	const sw::SessionState St = Session->View().State;
+	if (St != sw::SessionState::Hosting)
+	{
+		return;
+	}
+	const double Now = FPlatformTime::Seconds();
+	if (Now - LastPauseSaveAt < 20.0)
+	{
+		return;
+	}
+	LastPauseSaveAt = Now;
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=pause_checkpoint_requested world=%s"), *WorldId);
+	SaveAndUpload(sw::SaveKind::Checkpoint);
+}
+
+void USharedWorldHostController::PollPauseMenu()
+{
+	if (!bInGameWorld)
+	{
+		bPauseMenuWasOpen = false;
+		return;
+	}
+	bool bOpen = false;
+	if (UWorld* World = GameWorld.Get())
+	{
+		if (AFGPlayerController* PC = Cast<AFGPlayerController>(World->GetFirstPlayerController()))
+		{
+			if (UFGGameUI* UI = PC->GetGameUI())
+			{
+				bOpen = UI->IsPauseMenuOpen();
+			}
+		}
+	}
+	if (bOpen && !bPauseMenuWasOpen)
+	{
+		OnPauseMenuOpened();
+	}
+	bPauseMenuWasOpen = bOpen;
 }
 
 void USharedWorldHostController::RetryPendingRelease()
@@ -243,6 +471,18 @@ void USharedWorldHostController::RetryPendingRelease()
 	if (!IsBusy() || bInGameWorld || !Session)
 	{
 		return; // still in-world, or nothing pending, or already released
+	}
+	// In-flight SaveGame after leave never completed — don't wait forever.
+	if (bSaving && bWorldEnded && TearDownAt > 0.0 && FPlatformTime::Seconds() - TearDownAt > 8.0)
+	{
+		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=host_leave_save_timeout world=%s"), *WorldId);
+		bSaving = false;
+		Session->OnWorldEnded();
+		return;
+	}
+	if (bSaving)
+	{
+		return;
 	}
 	Session->OnWorldEnded();
 }

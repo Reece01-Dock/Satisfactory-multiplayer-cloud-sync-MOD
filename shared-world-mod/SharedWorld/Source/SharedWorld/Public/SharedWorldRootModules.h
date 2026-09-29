@@ -7,7 +7,7 @@
 
 /**
  * Root menu-world module: SML creates it whenever the main menu loads.
- * Shows the Shared Worlds panel.
+ * Notifies the subsystem so Shared Worlds can inject into the native menu list.
  */
 UCLASS()
 class SHAREDWORLD_API URootMenuWorld_SharedWorld : public UMenuWorldModule

@@ -30,6 +30,7 @@ class SHAREDWORLD_API USharedWorldEntry : public UUserWidget
 
 public:
 	void Update(const FSharedWorldEntryView& View);
+	const FString& ListedWorldId() const { return Current.WorldId; }
 
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;

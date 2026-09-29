@@ -19,6 +19,9 @@
 
 namespace sw
 {
+	struct SaveObjectEncoding;
+	struct CompressStats;
+
 	struct FileChange
 	{
 		std::string Path;
@@ -66,12 +69,26 @@ namespace sw
 		virtual ~IObjectStore() = default;
 
 		virtual Result<bool> Has(const std::string& Sha256) = 0;
-		/** Stores the file at LocalPath (whose content hash is Sha256). Idempotent; verifies what it stored. */
+		/**
+		 * Stores LocalPath under ObjectId when content hash(LocalPath)==ObjectId.
+		 * Prefer PutBlob when storing opaque packages whose bytes differ from ObjectId.
+		 */
 		virtual Status Put(const std::string& Sha256, const std::string& LocalPath) = 0;
-		/** Writes the object's bytes to DestPath (overwritten). Callers verify the hash. */
+		/**
+		 * Store opaque bytes under ObjectId without requiring hash(LocalPath)==ObjectId.
+		 * Default implementation falls back to Put (hash-checked).
+		 */
+		virtual Status PutBlob(const std::string& ObjectId, const std::string& LocalPath)
+		{
+			return Put(ObjectId, LocalPath);
+		}
+		/** Writes the object's bytes to DestPath (overwritten). Callers verify the logical save hash. */
 		virtual Status Get(const std::string& Sha256, const std::string& DestPath) = 0;
 		virtual Status Remove(const std::string& Sha256) = 0;
 		virtual Result<std::vector<std::string>> List() = 0;
 		virtual std::string Describe() const = 0;
+		/** When Put stores a packaged object, implementations may expose encoding metadata. */
+		virtual const SaveObjectEncoding* PeekLastPutEncoding() const { return nullptr; }
+		virtual const CompressStats* PeekLastPutStats() const { return nullptr; }
 	};
 }

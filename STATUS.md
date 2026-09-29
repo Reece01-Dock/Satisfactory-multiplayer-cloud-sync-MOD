@@ -1,6 +1,6 @@
 # STATUS
 
-_Last updated: 2026-09-27 — native architecture (Phases A–G) implemented and tested in the core; the Unreal layer is rewritten onto it but has **not been compiled or run in game** (no UE/SML toolchain in this environment)._
+_Last updated: 2026-09-29 — Shared Worlds browser redesigned for progressive disclosure (Create / Join Friend / sections); Discovery/Invite/Creation services wired; Shipping build installed._
 
 ## Architecture in one paragraph
 
@@ -15,7 +15,7 @@ game-instance subsystem that ticks one `sw::WorldSession` per world and
 drives the game (load save / join / save) when a session asks. The Go
 helper stays in the repo as the reference implementation and test oracle
 (its save validator produced the shared conformance corpus). Design:
-`docs/native-architecture.md`.
+`docs/native-architecture.md`. UI integration: `docs/ui-integration.md`.
 
 **Who does what with Steam / Epic vs storage:**
 
@@ -38,9 +38,10 @@ helper stays in the repo as the reference implementation and test oracle
 | F Session engine, host migration (successor reservation), crash recovery (candidate rules) | **Done & tested** |
 | G GitHub provider (Git Data API fast-forward CAS + release-asset objects), device-flow sign-in, membership, local settings | **Done & tested** against a faithful fake GitHub |
 | H UE integration (adapters, subsystem, host/join controllers, panel, chat) | **Written, not compiled** |
+| H2 Native menu UI (main menu entry, browser, Manage Session, migration overlay) | **Written, not compiled** — see `docs/ui-integration.md` |
 | I Runtime validation in game | **Not started** — needs the game |
 
-## Verified behaviour (86 core tests, `shared-world-mod/core-tests`)
+## Verified behaviour (104+ core tests, `shared-world-mod/core-tests`)
 
 Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core.yml`).
 
@@ -48,6 +49,13 @@ Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core
 * **Fencing.** A replaced host coming back cannot renew, commit or release; its save is kept as a conflict backup. A client holding revision N can never overwrite N+1.
 * **Safe transfer.** Corrupt / truncated / extended downloads are rejected and the local save stays byte-identical; interrupted uploads leave the cloud head intact; a lost commit response is resolved, never blindly retried; truncated local saves are never uploaded.
 * **Host flows.** HOST then JOIN; 5 simultaneous Play → one host; stop uploads + releases; checkpoints advance revisions; newer cloud revision refuses upload (backup kept).
+* **Host election (peer matrix).** Every candidate is scored from a full NxN RTT/jitter/loss matrix (not ping-to-host alone). Configurable `HostScoreWeights`; high loss/jitter loses to a slightly higher but stable RTT. Hard gates: storage, compatibility, session capability, host eligibility. Deterministic tie-breakers. Hysteresis blocks tiny score flips.
+* **Host migration engine.** Planned and crash state machines with event traces, timeouts, successor readiness, ranking freeze during planned handoff, and fallback when the preferred successor fails. Headless `MultiplayerSimulator` (2–50 players) drives the *same* SharedWorldCore algorithms used by the mod.
+* **Scenarios A–L** (`Scenario_*` tests): startup, 16-way Play, matrix election, planned migration, crash, stale return, partition, interrupted upload, CAS conflict, corrupt download, unsynced progress, Steam/session client join.
+* **Benchmarks.** Election ranking cost measured at 4 / 8 / 16 / 32 / 50 players.
+* **Migration scenarios 1–10** covered by automated tests (best successor, fallback, loss vs ping, save-cache emergency bias, crash + generation bump, stale host fenced, session publish failure, storage outage mid-migration, multi-candidate race, frozen ranking).
+* **Chaos suite.** Seeded fuzz (`--seed` / `SW_TEST_SEED`); small suite in CI; large overnight suite via `-DSW_CHAOS_FULL=ON`. Suite summary prints election/crash/migration/storage counters.
+* **Docs.** `docs/testing.md` — one-command harness, two-instance Satisfactory checklist, multi-PC plan. `docs/ui-integration.md` — menu hooks and screens.
 * **Migration.** Planned handover reserves the world for the successor and hands over the exact revision; after the window anyone may take over. A successor recorded without an install id (the host cannot know it) matches on player id.
 * **Crash recovery.** Clients of a crashed host take over in a deterministic stagger after lease expiry; a crashed host resumes its own lease and recovers unsynced progress; recovery candidates are accepted only from the crashed generation, based on the head, validated and available — never because they are newest.
 * **A client that quit to the menu never takes over** (mutation-checked: without the fix it silently became host).
@@ -60,9 +68,8 @@ Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core
 
 * `SharedWorld.Build.cs` depends on `SharedWorldCore`; the helper executable and IPC client are removed.
 * Adapters: `FSharedWorldHttpClient` (blocking only on core worker threads, bounded wait, completion state survives a timeout), `FSharedWorldLogSink`, `FSharedWorldCredentialStore` (Windows Credential Manager).
-* `USharedWorldSubsystem`: loads `%LOCALAPPDATA%/SatisfactorySharedWorld/settings.json`, one runtime per world, ticks sessions every second, reacts to `READY_TO_HOST` (load save, going to the menu first if needed), `JOIN_READY` (join from the menu), `MIGRATING` (migration save), `LEASE_LOST` / handover (return to menu, old host rejoins as client), host load timeout (5 min). Creation, history, membership and invites run on a background queue.
-* Game events: network failure → `OnHostConnectionLost` / `OnJoinFailed`; client world ready → `OnJoinedAsClient`; client leaving on purpose → `OnLeftAsClient`; hosted world teardown → `OnWorldEnded` with retry until released.
-* UI (C++ UMG, main menu): world list with status, host, players, revision, last played; Play / Cancel / Retry / Dismiss; details with steps, error detail, history, restore-by-number, remove from list; setup box with GitHub sign-in (device code shown in the panel), convert a save, add a friend's world.
+* `USharedWorldSubsystem`: loads `%LOCALAPPDATA%/SatisfactorySharedWorld/settings.json`, one runtime per world, ticks sessions every second, reacts to `READY_TO_HOST` (load save, going to the menu first if needed), `JOIN_READY` (join from the menu), `MIGRATING` (migration save), `LEASE_LOST` / handover (return to menu, old host rejoins as client), host load timeout (5 min). Creation, history, membership and invites run on a background queue. Migration overlay follows `HostMigrationEngine` / session state.
+* **Native menus (H2):** `USharedWorldGameInstanceModule` registers SML WidgetBlueprintHooks on `mMainMenuList` / `mManageSessionList` and runtime-injects after **Join Game** / under Manage Session. Browser, details, session management, and migration/recovery overlays are C++ UMG under `UI/`. Corner overlay disabled as primary UX (`docs/ui-integration.md`).
 * Chat: `/sharedworld status | history | players | save | stop | migrate <player> | allow <player> [role] | remove <player> | open | restrict | granthost <github-user> | log`.
 
 ## Known limitations
@@ -71,11 +78,12 @@ Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core
 * **GitHub OAuth client id is empty** (`GitHubClientId` in `SharedWorldSubsystem.cpp`): the project owner must register a GitHub OAuth App with device flow enabled. Until then only folder storage works.
 * **Installed-mod list** is not collected (the SML API was not verified), so worlds record no required mods.
 * **Game build number** is taken from the engine changelist; must be confirmed to match save headers.
-* **Successor readiness** (compatible, storage reachable, has head cached) is not exchanged between players; planned migration trusts the host's choice and falls back to normal takeover if the successor cannot host.
+* **Successor readiness** is scored in SharedWorldCore (`HostElection` / `HostMigrationEngine`) and covered by headless tests; in-game exchange of readiness still needs live peer probes wired from the UE net driver.
+* **Peer RTT matrix in game** uses injected/dev values until a `RealNetworkQualityProvider` probes Satisfactory sessions; the algorithms and simulator already consume the full matrix.
 * **Peer recovery candidates** come from the host's own reports; clients cannot save the host's world.
-* Menu UI is an overlay panel, not inserted into the game's menu list; no dedicated in-game players/settings screens yet (chat commands cover them).
+* **Continue / Load Game** Shared-World awareness not yet wired (needs reliable last-played Shared World id); Load protection against split-brain is documented as follow-up in `docs/ui-integration.md`.
 * Friends join via the game's own friends list; the mod does not open the platform invite dialog itself (API not verified).
-* Exiting a hosted world without `/sharedworld stop` uploads the last completed save (checkpoints every 15 min).
+* Exiting a hosted world without `/sharedworld stop` uploads the last completed save (checkpoints every 15 min). Graceful exit intercept (LEAVING SHARED WORLD) still uses the existing stop/migration path.
 
 ## Runtime validation needed (Phase I)
 
@@ -86,10 +94,12 @@ Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core
 5. `ClientReturnToMainMenuWithTextReason` returns to Satisfactory's main menu (lease lost / handover / successor).
 6. FHttpModule on worker threads; whether the game's libcurl forwards `Authorization` across a redirect host (the provider does not depend on it, but it must not leak).
 7. Player id format from `GetPreferredUniqueNetId()` / `APlayerState::GetUniqueId()` is identical for the same account on host and clients.
+8. Main menu: Shared Worlds under Join Game; Manage Session → Shared World; migration overlay during planned/crash handoff.
 
 ## Next steps
 
 1. Compile in the SML starter project; fix compile errors.
 2. Register the GitHub OAuth App; set the client id.
 3. Two-PC test (Steam + Epic): create from a save, host, join, checkpoint, stop, crash the host, planned migration, restore.
-4. Replace the chat-only players/settings management with menu screens.
+4. Verify controller navigation on Shared Worlds entry + browser.
+5. Wire Continue / Load Game Shared-World awareness when last-played id is reliable.

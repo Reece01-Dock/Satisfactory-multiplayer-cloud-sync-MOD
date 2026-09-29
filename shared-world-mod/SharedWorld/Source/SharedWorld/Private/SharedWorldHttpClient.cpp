@@ -32,9 +32,20 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
 	Req->SetVerb(UTF8_TO_TCHAR(Request.Method.c_str()));
 	Req->SetURL(UTF8_TO_TCHAR(Request.Url.c_str()));
+	bool bHasContentType = false;
 	for (const auto& [Key, Value] : Request.Headers)
 	{
+		if (FCStringAnsi::Stricmp(Key.c_str(), "Content-Type") == 0)
+		{
+			bHasContentType = true;
+		}
 		Req->SetHeader(UTF8_TO_TCHAR(Key.c_str()), UTF8_TO_TCHAR(Value.c_str()));
+	}
+	const bool bHasBody = !Request.BodyFile.empty() || !Request.Body.empty();
+	if (bHasBody && !bHasContentType)
+	{
+		// CurlHttp Shipping assert: body requires Content-Type unless URL-encoded.
+		Req->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 	}
 	if (!Request.BodyFile.empty())
 	{

@@ -38,6 +38,8 @@ namespace swtest
 		std::atomic<int> ContentCreatingRequests{0};
 		std::atomic<int> Requests{0};
 		std::atomic<bool> AuthLeakedToObjectHost{false};
+		/** When false, GET /repos/owner/repo 404s until POST /user/repos creates it. */
+		std::atomic<bool> RepoExists{true};
 
 		sw::Result<sw::HttpResponse> Send(const sw::HttpRequest& Req) override
 		{
@@ -67,9 +69,27 @@ namespace swtest
 				return R;
 			}
 			if (Req.Method != "GET") ++ContentCreatingRequests;
-			const std::string Prefix = "/repos/owner/repo";
 			if (Host == "uploads.fake") return Upload(Req, Path, Query);
+			if (Host == "api.fake" && Path == "/user/repos" && Req.Method == "POST")
+			{
+				auto Body = sw::json::Parse(Req.Body);
+				if (!Body || !Body->Find("name") || !Body->Find("name")->IsString()) return Reply(422, R"({"message":"name required"})");
+				if (Body->Find("name")->AsString() != "repo") return Reply(422, R"({"message":"Validation Failed"})");
+				if (RepoExists.load()) return Reply(422, R"({"message":"name already exists on this account"})");
+				RepoExists = true;
+				return Reply(201, R"({"id":1,"name":"repo","private":true,"full_name":"owner/repo"})");
+			}
+			const std::string Prefix = "/repos/owner/repo";
+			if (Path == Prefix || Path == Prefix + "/")
+			{
+				if (Req.Method == "GET")
+				{
+					if (!RepoExists.load()) return Reply(404, R"({"message":"Not Found"})");
+					return Reply(200, R"({"id":1,"name":"repo","private":true,"full_name":"owner/repo"})");
+				}
+			}
 			if (Path.compare(0, Prefix.size(), Prefix) != 0) return Reply(404, R"({"message":"Not Found"})");
+			if (!RepoExists.load()) return Reply(404, R"({"message":"Not Found"})");
 			const std::string P = Path.substr(Prefix.size());
 			return Route(Req, P, Query);
 		}

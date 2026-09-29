@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "SharedWorldCore/Storage/SaveObject.h"
 #include "SharedWorldCore/Util/Json.h"
 #include "SharedWorldCore/Util/Result.h"
 #include "SharedWorldCore/Util/Time.h"
@@ -59,7 +60,9 @@ namespace sw
 		int64_t Number = 0;
 		int64_t Generation = 0;
 		int64_t PreviousRevision = 0;
-		std::string ObjectSha256; // content address of the .sav bytes
+		/** SHA-256 of the uncompressed .sav bytes (authoritative content id). */
+		std::string ObjectSha256;
+		/** Uncompressed .sav size in bytes. */
 		int64_t Size = 0;
 		TimeMs CreatedAt = 0;
 		Identity Uploader;
@@ -67,6 +70,8 @@ namespace sw
 		int64_t RestoredFrom = 0; // for Reason::Restore
 		std::string GameBuild;
 		std::string ModVersion;
+		/** Optional encoding / object-store locator (absent on legacy revisions). */
+		std::optional<SaveObjectEncoding> SaveObject;
 
 		/** revisions/0000/00000152-g00000027-3f2a1c9e.json (sharded by thousands). */
 		std::string Path() const;
@@ -117,7 +122,17 @@ namespace sw
 		int64_t BaseRevision = 0;
 		LeasePhase Phase = LeasePhase::Preparing;
 		std::optional<JoinInfo> Join;
+		/**
+		 * True only when the host's multiplayer session is published and
+		 * clients should attempt join. Preparing hosts keep this false even
+		 * if a stale Join value is present. Older cloud documents without the
+		 * field are treated as ready when Phase==Hosting and Join is set.
+		 */
+		bool bHostReady = false;
 		std::vector<SessionPlayer> Players;
+
+		/** Joinable for clients: ready flag + (Join present OR friends-list-only hosting). */
+		bool IsJoinable() const { return bHostReady && Phase == LeasePhase::Hosting; }
 	};
 
 	struct SessionEnd
@@ -207,7 +222,7 @@ namespace sw
 		int64_t SyncIntervalMinutes = 10;
 		bool HostMigration = true;
 		bool PeerRecovery = true;
-		int64_t KeepRevisions = 100;
+		int64_t KeepRevisions = 5;
 		int64_t MaxPlayers = 4;
 		std::vector<std::string> PreferredHosts; // player ids, in order
 

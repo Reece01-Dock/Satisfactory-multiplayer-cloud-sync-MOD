@@ -25,6 +25,9 @@ struct FSharedWorldEntryView
 	FString LastPlayed; // "3 hours ago", empty if unknown
 	FString LastHostName;
 	bool bCreating = false; // being created / verified: not playable yet
+	/** owned = Your Worlds, shared = Shared With You */
+	bool bOwned = true;
+	FString InviteCode;
 
 	/** Local session, mirrored from sw::SessionState. Empty/"IDLE" when nothing is happening locally. */
 	FString LocalState;
@@ -39,4 +42,48 @@ struct FSharedWorldEntryView
 	bool bJoinReady = false;
 
 	bool IsLocalIdle() const { return LocalState.IsEmpty() || LocalState == TEXT("IDLE"); }
+	bool IsHostingNow() const { return CloudStatus == TEXT("ONLINE") || CloudStatus == TEXT("SAVING") || CloudStatus == TEXT("STARTING"); }
+	bool NeedsFriendsListFallback() const
+	{
+		return bJoinReady && LocalMessage.Contains(TEXT("friends list"));
+	}
+
+	/** Compact player-facing status line (no revision/hash). */
+	FString FriendlyStatusLine() const
+	{
+		if (bCreating) return TEXT("Setting up...");
+		if (LocalState == TEXT("CHECKING_HOST")) return TEXT("Checking host...");
+		if (LocalState == TEXT("WAITING_FOR_SESSION") || LocalState == TEXT("WAITING_FOR_HOST"))
+		{
+			return HostName.IsEmpty() ? TEXT("Waiting for host to finish loading...") : FString::Printf(TEXT("Waiting for %s to finish loading..."), *HostName);
+		}
+		if (LocalState == TEXT("JOINING") || LocalState == TEXT("JOIN_READY") || LocalState == TEXT("HOST_VERIFIED"))
+		{
+			return HostName.IsEmpty() ? TEXT("Connecting...") : FString::Printf(TEXT("Connecting to %s..."), *HostName);
+		}
+		if (LocalState == TEXT("JOIN_RETRY") || LocalState == TEXT("HOST_UNREACHABLE"))
+		{
+			return HostName.IsEmpty() ? TEXT("Host unreachable. Retrying...") : FString::Printf(TEXT("Could not reach %s. Retrying..."), *HostName);
+		}
+		if (LocalState == TEXT("RECOVERING_HOST") || LocalState == TEXT("RECONNECTING"))
+		{
+			return TEXT("Host connection lost. Recovering Shared World...");
+		}
+		if (LocalState == TEXT("ELECTING_HOST") || LocalState == TEXT("ACQUIRING"))
+		{
+			return TEXT("Selecting a new host...");
+		}
+		if (LocalState == TEXT("UPLOADING")) return LocalMessage.IsEmpty() ? TEXT("Uploading Shared World...") : LocalMessage;
+		if (LocalState == TEXT("MIGRATING") || CloudStatus == TEXT("MIGRATING"))
+		{
+			return HostName.IsEmpty() ? TEXT("Migrating host...") : FString::Printf(TEXT("Migrating host... %s starting world"), *HostName);
+		}
+		if (IsHostingNow() && !HostName.IsEmpty())
+		{
+			if (PlayerCount > 0) return FString::Printf(TEXT("%s hosting · %d players"), *HostName, PlayerCount);
+			return FString::Printf(TEXT("%s hosting"), *HostName);
+		}
+		if (!LastPlayed.IsEmpty()) return FString::Printf(TEXT("Available · Last played %s"), *LastPlayed);
+		return TEXT("Available · Nobody hosting");
+	}
 };

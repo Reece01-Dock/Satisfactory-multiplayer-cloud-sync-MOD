@@ -34,6 +34,9 @@ namespace sw
 		Status Validate() const;
 	};
 
+	/** How this PC relates to the world (drives Your Worlds vs Shared With You). */
+	enum class WorldRelation { Owned, Shared };
+
 	struct WorldEntry
 	{
 		std::string WorldId;
@@ -41,6 +44,20 @@ namespace sw
 		ProviderConfig Provider;
 		TimeMs AddedAt = 0;
 		TimeMs LastPlayedAt = 0;
+		WorldRelation Relation = WorldRelation::Owned;
+		/** Short share code (XXXX-XXXX) for Join Using Code. Empty until generated. */
+		std::string InviteCode;
+	};
+
+	struct PendingInvite
+	{
+		std::string InviteId;
+		std::string WorldId;
+		std::string WorldName;
+		std::string FromPlayerId;
+		std::string FromDisplayName;
+		ProviderConfig Provider;
+		TimeMs CreatedAt = 0;
 	};
 
 	struct LocalSettings
@@ -49,8 +66,15 @@ namespace sw
 		/** Signed-in GitHub login (display only; the token is in the credential store). */
 		std::string GitHubLogin;
 		std::vector<WorldEntry> Worlds;
+		/** True after the one-time welcome / storage connect screen. */
+		bool bWelcomeDone = false;
+		/** Auto-selected storage for new worlds (folder or GitHub). Empty = derive at runtime. */
+		std::optional<ProviderConfig> DefaultProvider;
+		/** Invites waiting for Accept / Decline on this PC. */
+		std::vector<PendingInvite> PendingInvites;
 
 		const WorldEntry* Find(const std::string& WorldId) const;
+		WorldEntry* FindMutable(const std::string& WorldId);
 		/** Adds or replaces the entry with the same world id. */
 		Status Upsert(const WorldEntry& Entry);
 		bool Remove(const std::string& WorldId);

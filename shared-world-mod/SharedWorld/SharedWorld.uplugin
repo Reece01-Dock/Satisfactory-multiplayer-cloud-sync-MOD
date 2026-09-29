@@ -16,14 +16,6 @@
 	"RemoteVersionRange": ">=0.1.0 <0.2.0",
 	"Modules": [
 		{
-			"Name": "SharedWorldCore",
-			"Type": "Runtime",
-			"LoadingPhase": "PreDefault",
-			"TargetDenyList": [
-				"Server"
-			]
-		},
-		{
 			"Name": "SharedWorld",
 			"Type": "Runtime",
 			"LoadingPhase": "PostDefault",

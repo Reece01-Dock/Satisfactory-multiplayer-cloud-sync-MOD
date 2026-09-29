@@ -52,6 +52,7 @@ namespace sw
 
 		Result<bool> Has(const std::string& Sha256) override;
 		Status Put(const std::string& Sha256, const std::string& LocalPath) override;
+		Status PutBlob(const std::string& ObjectId, const std::string& LocalPath) override;
 		Status Get(const std::string& Sha256, const std::string& DestPath) override;
 		Status Remove(const std::string& Sha256) override;
 		Result<std::vector<std::string>> List() override;

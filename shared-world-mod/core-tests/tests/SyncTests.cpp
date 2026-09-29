@@ -285,6 +285,27 @@ SW_TEST(Sync_RestoreCreatesNewRevision)
 	EXPECT_ERR(A.Sync->Restore(Stale, (*History)[0], Player(1)), ErrorCode::Fenced);
 }
 
+// Old cloud revisions (and their save objects) are pruned after each upload.
+SW_TEST(Sync_PrunesOldRevisionsBeyondKeep)
+{
+	Env E;
+	auto A = E.MakePeer();
+	A.Sync = std::make_shared<SyncEngine>(E.Hooked, A.Leases, SyncConfig{TempDir(), 5, 5});
+	LeaseToken Tok = Acquire(A, 1);
+	for (int i = 1; i <= 7; ++i)
+	{
+		ASSERT_OK(A.Sync->Upload(Tok, E.WriteSave("r" + std::to_string(i), "body-" + std::to_string(i)), Fast()));
+	}
+	auto Hist = A.Sync->History(A.Leases->Store().Load()->CommitId);
+	ASSERT_OK(Hist);
+	EXPECT_EQ(Hist->size(), size_t(5));
+	EXPECT_EQ((*Hist)[0].Number, int64_t(7));
+	EXPECT_EQ((*Hist)[4].Number, int64_t(3));
+	auto Listed = E.Objects->List();
+	ASSERT_OK(Listed);
+	EXPECT_EQ(Listed->size(), size_t(5));
+}
+
 // Test 12: duplicate content is stored once.
 SW_TEST(Sync_DuplicateContentIsDeduplicated)
 {

@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "SharedWorldCore/HostHandshake/HostHandshake.h"
 #include "SharedWorldCore/Lease/Lease.h"
 #include "SharedWorldCore/Migration/Migration.h"
 #include "SharedWorldCore/Sync/Sync.h"
@@ -33,13 +34,23 @@ namespace sw
 		Idle,
 		Checking,        // reading the shared world
 		WaitingForHost,  // a host holds the lease but has not published its session yet
+		WaitingForSession, // host lease live; session / HostReady not yet available
+		CheckingHost,    // verifying the lease holder is reachable
+		HostVerified,    // handshake ok; transitioning to join
+		HostUnreachable, // probe failed; may JoinRetry while lease still live
 		JoinReady,       // decision JOIN: the game should join View().Join
+		Joining,         // game join sequence in flight
+		JoinRetry,       // join/verify failed; short retry while lease live
 		Joined,          // playing as a client; following the host
 		Reconnecting,    // host connection lost: waiting for a new host or taking over
+		RecoveringHost,  // UX: recovering after unreachable host / crash signals
+		ElectingHost,    // selecting / acquiring a new host after lease expiry
 		Acquiring,       // claiming the host lease
 		Recovering,      // publishing unsynced / recovered progress
 		Downloading,     // fetching and verifying the save
 		ReadyToHost,     // save installed: the game should load View().SavePath
+		StartingSession, // game world loading / session definition starting
+		PublishingSession, // waiting for online session id
 		Hosting,
 		Uploading,       // checkpoint / final / migration upload
 		Migrating,       // handing the world to View().Successor
@@ -94,9 +105,18 @@ namespace sw
 		TimeMs HeartbeatInterval = Seconds(20);
 		TimeMs PollInterval = Seconds(3);
 		TimeMs JoinWaitTimeout = Minutes(3);
+		/** How long to keep probing an unreachable host before waiting on lease expiry. */
+		TimeMs HostVerifyTimeout = Seconds(45);
+		TimeMs HostVerifyProbeTimeout = Seconds(5);
+		TimeMs JoinRetryInterval = Seconds(3);
 		/** Delay per takeover rank after a host crash (rank 0 goes first). */
 		TimeMs TakeoverStagger = Seconds(5);
 		UploadOptions Upload;
+		/**
+		 * Optional reachability probe. When null, clients still require
+		 * Lease.bHostReady / IsJoinable before JoinReady, but skip the live handshake.
+		 */
+		std::shared_ptr<IHostVerifier> HostVerifier;
 	};
 
 	class WorldSession
@@ -123,16 +143,27 @@ namespace sw
 		// ---- game events: host
 		/** The world is loaded as host; Join is the published session (nullopt: friends list only). */
 		void OnHostingStarted(const std::optional<JoinInfo>& Join);
+		/** Game has begun loading the SharedWorld save (after ReadyToHost). */
+		void OnHostLoadStarted();
+		/** Online session id is being sought / publish in progress. */
+		void OnHostPublishingSession();
 		/** UFGSaveSystem::SaveGame completed for SaveName. */
 		void OnSaveCompleted(SaveKind Kind);
 		/** The host's world ended without a final save (exit to menu / quit). */
 		void OnWorldEnded();
+		/**
+		 * Process is quitting: do not start long HTTP uploads (Curl/HTTP die mid-exit and hang).
+		 * Clears local lease tracking; cloud lease expires. Prefer a proper leave-to-menu so a final upload runs.
+		 */
+		void AbandonOnProcessExit();
 		/** Asks the game to save for a planned migration to Successor (game then calls OnSaveCompleted(Migration)). */
 		void RequestMigration(const Identity& Successor);
 		void SetPlayers(std::vector<SessionPlayer> Players);
 
 		// ---- game events: client
 		void OnJoinedAsClient();
+		/** The game layer started the join sequence for View().Join. */
+		void OnJoinStarted();
 		/** The game could not join View().Join. */
 		void OnJoinFailed(const std::string& Reason);
 		void OnHostConnectionLost();
@@ -152,6 +183,7 @@ namespace sw
 	private:
 		// All Do* functions run on a worker queue.
 		void DoCheckAndDecide();
+		void DoVerifyHost(StateSnapshot Snap);
 		void DoHost(const StateSnapshot& Snap);
 		void DoFollowHost();
 		void DoReconnect();
@@ -169,6 +201,8 @@ namespace sw
 		void PersistActiveLease(const std::optional<LeaseToken>& Token);
 		std::optional<std::string> PermissionProblem(const std::string& CommitId, Permission P);
 		bool IsLeaseState(SessionState S) const;
+		void EnterJoinPath(const Lease& L, int64_t HeadRevision, const std::string& Message);
+		void ScheduleHostVerify(const StateSnapshot& Snap);
 
 		std::shared_ptr<LeaseManager> Leases;
 		std::shared_ptr<SyncEngine> Sync;
@@ -187,8 +221,11 @@ namespace sw
 		TimeMs WaitDeadline = 0;
 		TimeMs TakeoverNotBefore = 0;
 		TimeMs ConnectionLostAt = 0;
+		TimeMs HostVerifyDeadline = 0;
+		int HostVerifyAttempts = 0;
 		std::atomic<bool> bPollInFlight{false};
 		std::atomic<bool> bHeartbeatInFlight{false};
+		std::atomic<bool> bVerifyInFlight{false};
 
 		SerialQueue Ops;
 		SerialQueue Heartbeats;

@@ -56,11 +56,17 @@ namespace sw
 		/** Sends an authenticated API request; maps 401/403/404/409/422/429/5xx to error codes. */
 		Result<HttpResponse> Call(HttpRequest Req, std::initializer_list<int> OkStatuses = {200, 201});
 		std::string RepoUrl(const std::string& Suffix) const;
+		/**
+		 * Ensures github.com/<Owner>/<Repo> exists. If missing, creates a private empty
+		 * repository under the authenticated user. Idempotent.
+		 */
+		Status EnsureRepositoryExists();
 		IHttpClient& Client() { return *Http; }
 
 	private:
 		std::shared_ptr<IHttpClient> Http;
 		GitHubConfig Cfg;
+		bool bRepoExistsCached = false;
 	};
 
 	class GitHubRepository final : public IWorldRepository
@@ -91,6 +97,7 @@ namespace sw
 
 		Result<bool> Has(const std::string& Sha256) override;
 		Status Put(const std::string& Sha256, const std::string& LocalPath) override;
+		Status PutBlob(const std::string& ObjectId, const std::string& LocalPath) override;
 		Status Get(const std::string& Sha256, const std::string& DestPath) override;
 		Status Remove(const std::string& Sha256) override;
 		Result<std::vector<std::string>> List() override;

@@ -20,7 +20,7 @@ void USharedWorldJoinManager::Init(USharedWorldSubsystem* InOwner)
 
 void USharedWorldJoinManager::Fail(const FString& Reason)
 {
-	UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=PlayerJoinFailed reason=\"%s\""), *Reason);
+	UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld/Join] event=PlayerJoinFailed reason=\"%s\""), *Reason);
 	if (Session)
 	{
 		Session->OnJoinFailed(TCHAR_TO_UTF8(*Reason));
@@ -42,6 +42,11 @@ bool USharedWorldJoinManager::Join(UWorld* MenuWorld, sw::WorldSession* InSessio
 	}
 	World = MenuWorld;
 
+	if (Session)
+	{
+		Session->OnJoinStarted();
+	}
+
 	if (Kind == TEXT("address"))
 	{
 		FSessionJoinParams Params;
@@ -54,7 +59,7 @@ bool USharedWorldJoinManager::Join(UWorld* MenuWorld, sw::WorldSession* InSessio
 			return false;
 		}
 		Sequence->Start();
-		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=join_started kind=address"));
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/Join] event=join_started kind=address"));
 		return true;
 	}
 
@@ -69,10 +74,11 @@ bool USharedWorldJoinManager::Join(UWorld* MenuWorld, sw::WorldSession* InSessio
 	if (!User)
 	{
 		OutError = TEXT("You are not signed in to the game's online services.");
+		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld/Join] event=join_failed reason=not_signed_in"));
 		return false;
 	}
 	const UE::Online::FOnlineSessionId SessionId = UCommonSessionSubsystem::MakeOnlineSessionId(Value);
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=PlayerJoinStarted kind=online-session-id"));
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/Join] event=PlayerJoinStarted kind=online-session-id session_id_hash=%u"), GetTypeHash(Value));
 	TWeakObjectPtr<USharedWorldJoinManager> WeakThis(this);
 	Sessions->ResolveOnlineSession(User, SessionId).Next([WeakThis](USessionInformation* Found)
 	{
@@ -101,7 +107,7 @@ void USharedWorldJoinManager::OnSessionResolved(USessionInformation* Found)
 	FJoinSessionResponse Response;
 	Response.BindUFunction(this, GET_FUNCTION_NAME_CHECKED(USharedWorldJoinManager, OnJoinResponse));
 	UCommonSessionStatics::JoinSession(PC, Found, Response);
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=join_started kind=online-session-id"));
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/Join] event=join_started kind=online-session-id resolved=1"));
 }
 
 void USharedWorldJoinManager::OnJoinResponse(USessionMigrationSequence* Sequence)

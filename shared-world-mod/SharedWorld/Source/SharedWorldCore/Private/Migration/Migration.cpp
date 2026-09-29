@@ -16,26 +16,42 @@ namespace sw
 		return static_cast<int>(Preferred.size());
 	}
 
-	std::optional<Identity> SelectSuccessor(const std::vector<SuccessorCandidate>& Candidates, const std::vector<std::string>& PreferredHosts, const Identity& CurrentHost)
+	std::optional<Identity> SelectSuccessor(const std::vector<SuccessorCandidate>& Candidates, const std::vector<std::string>& PreferredHosts,
+		const Identity& CurrentHost, const HostScoreWeights& Weights)
 	{
-		std::vector<const SuccessorCandidate*> Eligible;
+		std::vector<HostCandidate> Converted;
+		Converted.reserve(Candidates.size());
 		for (const SuccessorCandidate& C : Candidates)
 		{
-			if (C.bConnected && C.bCompatible && C.bStorageReachable && C.Who.PlayerId != CurrentHost.PlayerId && C.Who.Validate().Ok())
-			{
-				Eligible.push_back(&C);
-			}
+			HostCandidate H;
+			H.Who = C.Who;
+			H.bConnected = C.bConnected;
+			H.bCompatible = C.bCompatible;
+			H.bStorageReachable = C.bStorageReachable;
+			H.bHasHeadCached = C.bHasHeadCached;
+			H.bHostEligible = C.bHostEligible;
+			H.bSessionCapable = C.bSessionCapable;
+			H.bUploadSufficient = C.bUploadSufficient;
+			H.PingMs = C.PingMs;
+			H.Network = C.Network;
+			Converted.push_back(H);
 		}
-		if (Eligible.empty()) return std::nullopt;
-		std::sort(Eligible.begin(), Eligible.end(), [&](const SuccessorCandidate* A, const SuccessorCandidate* B)
+		std::vector<RankedHost> Ranked = RankHosts(Converted, CurrentHost, Weights, false);
+		if (Ranked.empty()) return std::nullopt;
+		if (!PreferredHosts.empty())
 		{
-			const int PA = PreferredIndex(PreferredHosts, A->Who.PlayerId), PB = PreferredIndex(PreferredHosts, B->Who.PlayerId);
-			if (PA != PB) return PA < PB;
-			if (A->bHasHeadCached != B->bHasHeadCached) return A->bHasHeadCached;
-			if (A->PingMs != B->PingMs) return A->PingMs < B->PingMs;
-			return A->Who.PlayerId < B->Who.PlayerId;
-		});
-		return Eligible.front()->Who;
+			std::stable_sort(Ranked.begin(), Ranked.end(), [&](const RankedHost& A, const RankedHost& B)
+			{
+				const int PA = PreferredIndex(PreferredHosts, A.Who.PlayerId);
+				const int PB = PreferredIndex(PreferredHosts, B.Who.PlayerId);
+				if (PA != PB) return PA < PB;
+				if (A.Score.Total != B.Score.Total) return A.Score.Total > B.Score.Total;
+				if (A.Network.WorstRttMs != B.Network.WorstRttMs) return A.Network.WorstRttMs < B.Network.WorstRttMs;
+				if (A.Network.AvgLossBp != B.Network.AvgLossBp) return A.Network.AvgLossBp < B.Network.AvgLossBp;
+				return A.Who.PlayerId < B.Who.PlayerId;
+			});
+		}
+		return Ranked.front().Who;
 	}
 
 	int TakeoverRank(const std::vector<SessionPlayer>& LastPlayers, const std::vector<std::string>& PreferredHosts, const std::string& MyPlayerId)

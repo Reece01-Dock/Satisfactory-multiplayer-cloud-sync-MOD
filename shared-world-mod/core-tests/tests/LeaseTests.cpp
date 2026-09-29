@@ -104,11 +104,12 @@ SW_TEST(Lease_Race2_CrashedHostLeaseExpires)
 		auto A = M->Acquire(Player(1), "a");
 		ASSERT_OK(A);
 		ASSERT_TRUE(A->Outcome == AcquireOutcome::Acquired);
-		Clock.Advance(Seconds(60));
-		EXPECT_TRUE(M->Acquire(Player(2), "b")->Outcome == AcquireOutcome::HeldByOther);
-		Clock.Advance(Seconds(40)); // 100 s: past TTL (90), inside skew grace (120)
-		EXPECT_TRUE(M->Acquire(Player(2), "b")->Outcome == AcquireOutcome::HeldByOther);
+		// Default LeaseConfig: TTL=45s, SkewGrace=15s → observer expiry at 60s.
 		Clock.Advance(Seconds(30));
+		EXPECT_TRUE(M->Acquire(Player(2), "b")->Outcome == AcquireOutcome::HeldByOther);
+		Clock.Advance(Seconds(20)); // 50s: past TTL, inside skew grace
+		EXPECT_TRUE(M->Acquire(Player(2), "b")->Outcome == AcquireOutcome::HeldByOther);
+		Clock.Advance(Seconds(15)); // 65s: past observer expiry
 		auto B = M->Acquire(Player(2), "b");
 		ASSERT_OK(B);
 		ASSERT_TRUE(B->Outcome == AcquireOutcome::Acquired);

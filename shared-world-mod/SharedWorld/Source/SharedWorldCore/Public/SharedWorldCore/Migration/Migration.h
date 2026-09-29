@@ -1,11 +1,13 @@
 #pragma once
 // Pure decision functions for host migration and crash recovery. Kept free
 // of I/O so they are deterministic and exhaustively testable.
+// Successor selection delegates to HostElection (peer-quality scoring).
 
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "SharedWorldCore/HostElection/HostElection.h"
 #include "SharedWorldCore/Model/Model.h"
 
 namespace sw
@@ -18,16 +20,21 @@ namespace sw
 		bool bCompatible = false;       // same game build / mod versions
 		bool bStorageReachable = false; // can read the repository and objects
 		bool bHasHeadCached = false;    // already holds the head revision's object
-		int PingMs = 9999;
+		int PingMs = 9999;              // kept here so existing brace-init keeps working
+		bool bHostEligible = true;
+		bool bSessionCapable = true;
+		bool bUploadSufficient = true;
+		/** When set, group experience metrics override PingMs. */
+		std::optional<HostNetworkSummary> Network;
 	};
 
 	/**
-	 * Chooses the planned-migration successor: eligible = connected,
-	 * compatible, storage reachable, not the current host. Ranked by the
-	 * world's preferred-host order, then cached head, then ping, then player
-	 * id (deterministic). nullopt when nobody is eligible.
+	 * Chooses the planned-migration successor via HostElection scoring.
+	 * PreferredHosts apply a deterministic bonus (lower index = higher).
+	 * nullopt when nobody is eligible.
 	 */
-	std::optional<Identity> SelectSuccessor(const std::vector<SuccessorCandidate>& Candidates, const std::vector<std::string>& PreferredHosts, const Identity& CurrentHost);
+	std::optional<Identity> SelectSuccessor(const std::vector<SuccessorCandidate>& Candidates, const std::vector<std::string>& PreferredHosts, const Identity& CurrentHost,
+		const HostScoreWeights& Weights = {});
 
 	/**
 	 * Order in which players should try to take over after a host crash

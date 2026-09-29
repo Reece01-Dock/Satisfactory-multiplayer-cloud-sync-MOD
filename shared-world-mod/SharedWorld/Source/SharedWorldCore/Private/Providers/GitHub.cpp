@@ -69,13 +69,69 @@ namespace sw
 
 	std::string GitHubApi::RepoUrl(const std::string& Suffix) const { return Cfg.ApiBase + "/repos/" + Cfg.Owner + "/" + Cfg.Repo + Suffix; }
 
+	Status GitHubApi::EnsureRepositoryExists()
+	{
+		if (bRepoExistsCached) return {};
+		HttpRequest Get;
+		Get.Url = Cfg.ApiBase + "/repos/" + Cfg.Owner + "/" + Cfg.Repo;
+		auto Existing = Call(Get, {200});
+		if (Existing.Ok())
+		{
+			bRepoExistsCached = true;
+			return {};
+		}
+		if (!Existing.Is(ErrorCode::NotFound)) return Existing.Err().Wrap("check GitHub repository");
+
+		// Auto-create a private empty repo under the signed-in user. Players should
+		// never need to create this manually. Name must match Config.Repo.
+		HttpRequest Create;
+		Create.Method = "POST";
+		Create.Url = Cfg.ApiBase + "/user/repos";
+		json::Value Body;
+		Body.Set("name", Cfg.Repo);
+		Body.Set("private", true);
+		Body.Set("description", "Satisfactory Shared Worlds cloud storage (created automatically by the Shared Worlds mod)");
+		Body.Set("auto_init", false);
+		Body.Set("has_issues", false);
+		Body.Set("has_projects", false);
+		Body.Set("has_wiki", false);
+		Create.Body = json::Serialize(Body);
+		auto Created = Call(Create, {201});
+		if (!Created)
+		{
+			// Race: another client created it, or it already existed under a naming quirk.
+			if (Created.Is(ErrorCode::Conflict))
+			{
+				auto Again = Call(Get, {200});
+				if (Again.Ok())
+				{
+					bRepoExistsCached = true;
+					return {};
+				}
+			}
+			return Created.Err().Wrap("create GitHub repository " + Cfg.Owner + "/" + Cfg.Repo);
+		}
+		bRepoExistsCached = true;
+		return {};
+	}
+
 	Result<HttpResponse> GitHubApi::Call(HttpRequest Req, std::initializer_list<int> OkStatuses)
 	{
 		SW_TRY(Cfg.Validate());
 		std::string Tok;
 		SW_ASSIGN(Tok, Cfg.Token());
 		bool bHasAccept = false;
-		for (const auto& [K, V] : Req.Headers) bHasAccept |= K == "Accept";
+		bool bHasContentType = false;
+		for (const auto& [K, V] : Req.Headers)
+		{
+			bHasAccept |= K == "Accept";
+			bHasContentType |= K == "Content-Type";
+		}
+		// UE CurlHttp asserts when a request has a body and no Content-Type header.
+		if (!bHasContentType && (!Req.Body.empty() || !Req.BodyFile.empty()))
+		{
+			Req.Headers.push_back({"Content-Type", "application/json"});
+		}
 		if (!bHasAccept) Req.Headers.push_back({"Accept", "application/vnd.github+json"});
 		Req.Headers.push_back({"Authorization", "Bearer " + Tok});
 		Req.Headers.push_back({"X-GitHub-Api-Version", "2022-11-28"});
@@ -211,6 +267,7 @@ namespace sw
 
 	Status GitHubRepository::EnsureRepositoryInitialised()
 	{
+		SW_TRY(Api.EnsureRepositoryExists());
 		// The Git Data API cannot create refs in a repository without any
 		// commit; the Contents API can create the first one.
 		HttpRequest Req;
@@ -227,6 +284,7 @@ namespace sw
 
 	Result<std::string> GitHubRepository::Commit(const std::string& ExpectedHead, const std::vector<FileChange>& Changes, const std::string& Message)
 	{
+		SW_TRY(Api.EnsureRepositoryExists());
 		for (const FileChange& C : Changes) SW_TRY(ValidateRepoPath(C.Path));
 		json::Array Entries;
 		for (const FileChange& C : Changes)
@@ -354,6 +412,7 @@ namespace sw
 
 	Status GitHubReleaseObjectStore::Refresh()
 	{
+		SW_TRY(Api.EnsureRepositoryExists());
 		std::map<std::string, Asset> NewAssets;
 		std::vector<Release> NewReleases;
 		for (int Page = 1; Page < 50; ++Page)
@@ -463,12 +522,19 @@ namespace sw
 
 	Status GitHubReleaseObjectStore::Put(const std::string& Sha, const std::string& LocalPath)
 	{
+		file::HashResult H;
+		SW_ASSIGN(H, file::Hash(LocalPath));
+		if (H.Sha256 != Sha) return MakeError(ErrorCode::Corrupt, "object content does not match its id");
+		return PutBlob(Sha, LocalPath);
+	}
+
+	Status GitHubReleaseObjectStore::PutBlob(const std::string& Sha, const std::string& LocalPath)
+	{
 		bool bHas = false;
 		SW_ASSIGN(bHas, Has(Sha));
 		if (bHas) return {};
 		file::HashResult H;
 		SW_ASSIGN(H, file::Hash(LocalPath));
-		if (H.Sha256 != Sha) return MakeError(ErrorCode::Corrupt, "object content does not match its id");
 		std::lock_guard<std::mutex> Lock(Mutex);
 		if (auto It = Assets.find(Sha); It != Assets.end() && !It->second.bComplete)
 		{

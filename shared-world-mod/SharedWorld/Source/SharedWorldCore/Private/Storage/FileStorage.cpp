@@ -198,18 +198,22 @@ namespace sw
 
 	Status FileObjectStore::Put(const std::string& Sha, const std::string& LocalPath)
 	{
+		auto H = file::Hash(LocalPath);
+		if (!H.Ok() || H->Sha256 != Sha)
+		{
+			return MakeError(ErrorCode::Corrupt, "object content does not match its id");
+		}
+		return PutBlob(Sha, LocalPath);
+	}
+
+	Status FileObjectStore::PutBlob(const std::string& ObjectId, const std::string& LocalPath)
+	{
 		std::string Final;
-		SW_ASSIGN(Final, PathFor(Sha));
-		if (file::Exists(Final)) return {}; // content-addressed: same id, same bytes
+		SW_ASSIGN(Final, PathFor(ObjectId));
+		if (file::Exists(Final)) return {}; // content-addressed: same id
 		SW_TRY(file::CreateDirectories(file::Parent(Final)));
 		const std::string Tmp = file::TempSibling(Final, "partial");
 		SW_TRY(file::CopyExclusive(LocalPath, Tmp));
-		auto H = file::Hash(Tmp);
-		if (!H.Ok() || H->Sha256 != Sha)
-		{
-			(void)file::Remove(Tmp);
-			return MakeError(ErrorCode::Corrupt, "object content does not match its id");
-		}
 		Status S = file::LinkExclusive(Tmp, Final); // atomic create-only publish
 		(void)file::Remove(Tmp);
 		if (!S.Ok() && !S.Is(ErrorCode::AlreadyExists)) return S;

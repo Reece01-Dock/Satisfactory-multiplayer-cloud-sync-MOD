@@ -2,6 +2,7 @@
 
 #include "SharedWorldCore/Model/Model.h"
 #include "SharedWorldCore/Providers/GitHub.h"
+#include "SharedWorldCore/Storage/EncodingObjectStore.h"
 #include "SharedWorldCore/Storage/FileStorage.h"
 #include "SharedWorldCore/Util/FileUtil.h"
 
@@ -118,6 +119,15 @@ namespace sw
 		return nullptr;
 	}
 
+	WorldEntry* LocalSettings::FindMutable(const std::string& WorldId)
+	{
+		for (WorldEntry& W : Worlds)
+		{
+			if (W.WorldId == WorldId) return &W;
+		}
+		return nullptr;
+	}
+
 	Status LocalSettings::Upsert(const WorldEntry& Entry)
 	{
 		SW_TRY(ValidateWorldId(Entry.WorldId));
@@ -154,6 +164,8 @@ namespace sw
 		Value V;
 		V.Set("version", int64_t(CurrentVersion));
 		V.Set("githubLogin", GitHubLogin);
+		V.Set("welcomeDone", bWelcomeDone);
+		if (DefaultProvider) V.Set("defaultProvider", DefaultProvider->ToJson());
 		json::Array A;
 		for (const WorldEntry& W : Worlds)
 		{
@@ -163,9 +175,25 @@ namespace sw
 			E.Set("provider", W.Provider.ToJson());
 			E.Set("addedAt", FormatTime(W.AddedAt));
 			E.Set("lastPlayedAt", FormatTime(W.LastPlayedAt));
+			E.Set("relation", W.Relation == WorldRelation::Shared ? "shared" : "owned");
+			if (!W.InviteCode.empty()) E.Set("inviteCode", W.InviteCode);
 			A.push_back(std::move(E));
 		}
 		V.Set("worlds", Value(std::move(A)));
+		json::Array Inv;
+		for (const PendingInvite& I : PendingInvites)
+		{
+			Value E;
+			E.Set("inviteId", I.InviteId);
+			E.Set("worldId", I.WorldId);
+			E.Set("name", I.WorldName);
+			E.Set("fromPlayerId", I.FromPlayerId);
+			E.Set("fromName", I.FromDisplayName);
+			E.Set("provider", I.Provider.ToJson());
+			E.Set("createdAt", FormatTime(I.CreatedAt));
+			Inv.push_back(std::move(E));
+		}
+		V.Set("pendingInvites", Value(std::move(Inv)));
 		return V;
 	}
 
@@ -177,6 +205,11 @@ namespace sw
 		LocalSettings S;
 		SW_ASSIGN(S.GitHubLogin, Text(V, "githubLogin", 64));
 		if (!S.GitHubLogin.empty() && !ValidGitHubName(S.GitHubLogin)) return MakeError(ErrorCode::Invalid, "invalid GitHub login");
+		if (const Value* Wd = V.Find("welcomeDone"); Wd && Wd->IsBool()) S.bWelcomeDone = Wd->AsBool();
+		if (const Value* Dp = V.Find("defaultProvider"))
+		{
+			SW_ASSIGN(S.DefaultProvider, ProviderConfig::FromJson(*Dp));
+		}
 		const Value* A = V.Find("worlds");
 		if (!A || !A->IsArray()) return MakeError(ErrorCode::Invalid, "worlds missing");
 		for (const Value& E : A->AsArray())
@@ -192,8 +225,35 @@ namespace sw
 			SW_ASSIGN(Played, json::GetString(E, "lastPlayedAt", 64));
 			SW_ASSIGN(W.AddedAt, ParseTime(Added));
 			SW_ASSIGN(W.LastPlayedAt, ParseTime(Played));
+			if (const Value* Rel = E.Find("relation"); Rel && Rel->IsString())
+			{
+				W.Relation = Rel->AsString() == "shared" ? WorldRelation::Shared : WorldRelation::Owned;
+			}
+			if (const Value* Ic = E.Find("inviteCode"); Ic && Ic->IsString())
+			{
+				W.InviteCode = Ic->AsString();
+			}
 			if (S.Find(W.WorldId)) return MakeError(ErrorCode::Invalid, "duplicate world id in settings");
 			SW_TRY(S.Upsert(W));
+		}
+		if (const Value* Inv = V.Find("pendingInvites"); Inv && Inv->IsArray())
+		{
+			for (const Value& E : Inv->AsArray())
+			{
+				PendingInvite I;
+				SW_ASSIGN(I.InviteId, json::GetString(E, "inviteId", 64));
+				SW_ASSIGN(I.WorldId, json::GetString(E, "worldId", 64));
+				SW_ASSIGN(I.WorldName, Text(E, "name", 128));
+				SW_ASSIGN(I.FromPlayerId, Text(E, "fromPlayerId", 128));
+				SW_ASSIGN(I.FromDisplayName, Text(E, "fromName", 128));
+				const Value* P = E.Find("provider");
+				if (!P) return MakeError(ErrorCode::Invalid, "invite without provider");
+				SW_ASSIGN(I.Provider, ProviderConfig::FromJson(*P));
+				std::string Created;
+				SW_ASSIGN(Created, json::GetString(E, "createdAt", 64));
+				SW_ASSIGN(I.CreatedAt, ParseTime(Created));
+				S.PendingInvites.push_back(std::move(I));
+			}
 		}
 		return S;
 	}
@@ -244,14 +304,24 @@ namespace sw
 				return T;
 			};
 			Out.Repository = std::make_shared<GitHubRepository>(Env.Http, C);
-			Out.Objects = std::make_shared<GitHubReleaseObjectStore>(Env.Http, C);
+			auto RawObjects = std::make_shared<GitHubReleaseObjectStore>(Env.Http, C);
+			EncodingObjectStoreConfig Enc;
+			Enc.Compress.Kind = CompressionKind::Zstd;
+			Enc.Compress.Level = 3;
+			Enc.Compress.MinRatioGain = 0.05;
+			Out.Objects = std::make_shared<EncodingObjectStore>(std::move(RawObjects), Enc);
 			return Out;
 		}
 		case ProviderKind::Folder:
 		{
 			const std::string Root = file::Join(Entry.Provider.FolderPath, Entry.WorldId);
 			Out.Repository = std::make_shared<FileRepository>(file::Join(Root, "repo"));
-			Out.Objects = std::make_shared<FileObjectStore>(file::Join(Root, "objects"));
+			auto RawObjects = std::make_shared<FileObjectStore>(file::Join(Root, "objects"));
+			EncodingObjectStoreConfig Enc;
+			Enc.Compress.Kind = CompressionKind::Zstd;
+			Enc.Compress.Level = 3;
+			Enc.Compress.MinRatioGain = 0.05;
+			Out.Objects = std::make_shared<EncodingObjectStore>(std::move(RawObjects), Enc);
 			return Out;
 		}
 		}

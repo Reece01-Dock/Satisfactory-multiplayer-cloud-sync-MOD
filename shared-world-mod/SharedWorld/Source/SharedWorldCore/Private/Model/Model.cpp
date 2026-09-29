@@ -157,6 +157,7 @@ namespace sw
 		}
 		V.Set("gameBuild", GameBuild);
 		V.Set("modVersion", ModVersion);
+		if (SaveObject) V.Set("saveObject", SaveObject->ToJson());
 		return V;
 	}
 
@@ -179,6 +180,10 @@ namespace sw
 		R.RestoredFrom = Restored.value_or(0);
 		SW_ASSIGN(R.GameBuild, GetOptionalText(V, "gameBuild", 64));
 		SW_ASSIGN(R.ModVersion, GetOptionalText(V, "modVersion", 64));
+		if (const Value* SO = V.Find("saveObject"))
+		{
+			SW_ASSIGN(R.SaveObject, SaveObjectEncoding::FromJson(*SO));
+		}
 		SW_TRY(R.Validate());
 		return R;
 	}
@@ -306,6 +311,7 @@ namespace sw
 			LV.Set("expiresAt", TimeValue(L.ExpiresAt));
 			LV.Set("baseRevision", L.BaseRevision);
 			LV.Set("phase", ToString(L.Phase));
+			LV.Set("hostReady", L.bHostReady);
 			LV.Set("join", L.Join ? L.Join->ToJson() : Value());
 			json::Array Players;
 			for (const SessionPlayer& P : L.Players)
@@ -386,11 +392,26 @@ namespace sw
 			std::string Phase;
 			SW_ASSIGN(Phase, json::GetString(*LV, "phase", 32));
 			SW_ASSIGN(L.Phase, ParseLeasePhase(Phase));
+			if (const Value* Ready = LV->Find("hostReady"))
+			{
+				if (!Ready->IsBool()) return MakeError(ErrorCode::Invalid, "lease hostReady must be a bool");
+				L.bHostReady = Ready->AsBool();
+			}
+			else
+			{
+				// Backward compatible: older hosts that published Join while Hosting
+				// are treated as ready.
+				L.bHostReady = false; // set after Join parse below
+			}
 			if (const Value* J = ObjectField(*LV, "join"))
 			{
 				JoinInfo Join;
 				SW_ASSIGN(Join, JoinInfo::FromJson(*J));
 				L.Join = std::move(Join);
+			}
+			if (!LV->Find("hostReady"))
+			{
+				L.bHostReady = L.Phase == LeasePhase::Hosting && L.Join.has_value();
 			}
 			if (const Value* P = ObjectField(*LV, "players"))
 			{

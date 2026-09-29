@@ -35,7 +35,7 @@ namespace SharedWorldStyle
 		return T;
 	}
 
-	UButton* MakeButton(UWidgetTree* Tree, const FLinearColor& Color, UTextBlock*& OutLabel, const FText& Label)
+	UButton* MakeButton(UWidgetTree* Tree, const FLinearColor& Color, TObjectPtr<UTextBlock>& OutLabel, const FText& Label)
 	{
 		UButton* B = Tree->ConstructWidget<UButton>();
 		B->SetBackgroundColor(Color);
@@ -114,7 +114,7 @@ void USharedWorldEntry::Build()
 	PlayButton->OnClicked.AddDynamic(this, &USharedWorldEntry::OnPlayClicked);
 	SecondaryButton = MakeButton(WidgetTree, Muted, SecondaryLabel, FText::GetEmpty());
 	SecondaryButton->OnClicked.AddDynamic(this, &USharedWorldEntry::OnSecondaryClicked);
-	UTextBlock* Unused = nullptr;
+	TObjectPtr<UTextBlock> Unused;
 	DetailsButton = MakeButton(WidgetTree, Muted, Unused, NSLOCTEXT("SharedWorld", "Details", "Details"));
 	DetailsButton->OnClicked.AddDynamic(this, &USharedWorldEntry::OnDetailsClicked);
 	for (UWidget* B : TArray<UWidget*>{PlayButton, SecondaryButton, DetailsButton})
@@ -315,7 +315,7 @@ TSharedRef<SWidget> USharedWorldPanel::RebuildWidget()
 		Size->SetWidthOverride(460.f);
 		WidgetTree->RootWidget = Size;
 		UBorder* Root = WidgetTree->ConstructWidget<UBorder>();
-		Root->SetBrushColor(SharedWorldStyle::Panel);
+		Root->SetBrushColor(FLinearColor(0.02f, 0.03f, 0.05f, 0.94f));
 		Root->SetPadding(FMargin(16.f));
 		Size->AddChild(Root);
 		UVerticalBox* Col = WidgetTree->ConstructWidget<UVerticalBox>();
@@ -327,7 +327,7 @@ TSharedRef<SWidget> USharedWorldPanel::RebuildWidget()
 		Header->SetText(NSLOCTEXT("SharedWorld", "Header", "SHARED WORLDS"));
 		UHorizontalBoxSlot* HeaderSlot = HeaderRow->AddChildToHorizontalBox(Header);
 		HeaderSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		UTextBlock* Unused = nullptr;
+		TObjectPtr<UTextBlock> Unused;
 		UButton* Toggle = MakeButton(WidgetTree, Muted, Unused, NSLOCTEXT("SharedWorld", "Setup", "+ Add / Account"));
 		Toggle->OnClicked.AddDynamic(this, &USharedWorldPanel::OnToggleSetup);
 		HeaderRow->AddChildToHorizontalBox(Toggle);
@@ -411,10 +411,15 @@ USharedWorldSubsystem* USharedWorldPanel::GetSharedWorld() const
 void USharedWorldPanel::NativeConstruct()
 {
 	Super::NativeConstruct();
-	// Top-right corner of the main menu, clear of the game's own menu column.
-	SetAnchorsInViewport(FAnchors(1.f, 0.f));
-	SetAlignmentInViewport(FVector2D(1.f, 0.f));
-	SetPositionInViewport(FVector2D(-48.f, 96.f), /*bRemoveDPIScale*/ false);
+	// Only apply viewport anchors when we were added via AddToPlayerScreen / AddToViewport.
+	// When parented into the main-menu canvas, the canvas slot owns layout.
+	if (IsInViewport())
+	{
+		SetAnchorsInViewport(FAnchors(0.58f, 0.08f, 0.98f, 0.9f));
+		SetAlignmentInViewport(FVector2D(0.f, 0.f));
+		SetPositionInViewport(FVector2D::ZeroVector, /*bRemoveDPIScale*/ false);
+	}
+	SetVisibility(ESlateVisibility::Visible);
 	if (USharedWorldSubsystem* SW = GetSharedWorld())
 	{
 		ChangedHandle = SW->OnChanged.AddUObject(this, &USharedWorldPanel::Refresh);
@@ -444,7 +449,19 @@ void USharedWorldPanel::Refresh()
 
 	const TArray<FSharedWorldEntryView> Worlds = SW->GetWorldViews();
 	Show(EmptyText, Worlds.Num() == 0);
-	if (Entries.Num() != Worlds.Num())
+	bool bRebuildList = Entries.Num() != Worlds.Num();
+	if (!bRebuildList)
+	{
+		for (int32 i = 0; i < Worlds.Num(); ++i)
+		{
+			if (Entries[i]->ListedWorldId() != Worlds[i].WorldId)
+			{
+				bRebuildList = true;
+				break;
+			}
+		}
+	}
+	if (bRebuildList)
 	{
 		List->ClearChildren();
 		Entries.Reset();
@@ -464,28 +481,34 @@ void USharedWorldPanel::Refresh()
 	const FSharedWorldSignIn SignIn = SW->GetSignInStatus();
 	const FString Login = SW->GetGitHubLogin();
 	FString Account;
-	if (SignIn.bInProgress && !SignIn.UserCode.IsEmpty())
+	if (!SignIn.bConfigured && Login.IsEmpty())
 	{
-		Account = FString::Printf(TEXT("Open %s in your browser and enter the code:  %s"), *SignIn.VerificationUri, *SignIn.UserCode);
+		Account = TEXT("GitHub\nGitHub integration is not configured in this build.");
+	}
+	else if (SignIn.bInProgress && !SignIn.UserCode.IsEmpty())
+	{
+		Account = FString::Printf(TEXT("Connect GitHub\nOpen GitHub and enter this code:\n%s\n%s"), *SignIn.UserCode, *SignIn.VerificationUri);
 	}
 	else if (SignIn.bInProgress)
 	{
-		Account = TEXT("Contacting GitHub...");
+		Account = SignIn.PlayerMessage.IsEmpty() ? TEXT("Opening GitHub...") : SignIn.PlayerMessage;
 	}
 	else if (!Login.IsEmpty())
 	{
-		Account = TEXT("GitHub: signed in as ") + Login + TEXT(" (needed only for GitHub storage)");
+		Account = TEXT("GitHub\nConnected as ") + Login;
 	}
 	else
 	{
-		Account = TEXT("GitHub: not signed in (needed only for worlds stored on GitHub)");
+		Account = TEXT("GitHub\nNot connected");
 	}
-	if (!SignIn.Error.IsEmpty())
+	if (!SignIn.Error.IsEmpty() && !SignIn.bInProgress)
 	{
 		Account += TEXT("\n") + SignIn.Error;
 	}
 	AccountText->SetText(FText::FromString(Account));
-	SignInLabel->SetText(!Login.IsEmpty() ? NSLOCTEXT("SharedWorld", "SignOut", "Sign out of GitHub") : NSLOCTEXT("SharedWorld", "SignIn", "Sign in with GitHub"));
+	SignInLabel->SetText(!Login.IsEmpty()
+		? NSLOCTEXT("SharedWorld", "DisconnectGitHub", "Disconnect")
+		: NSLOCTEXT("SharedWorld", "LinkGitHub", "Link GitHub"));
 }
 
 void USharedWorldPanel::SetResult(bool bOk, const FString& Message)

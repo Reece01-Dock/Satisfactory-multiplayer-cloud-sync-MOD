@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <unordered_set>
 
 #include "SharedWorldCore/Save/SaveFile.h"
+#include "SharedWorldCore/Storage/Compress.h"
+#include "SharedWorldCore/Storage/SaveObject.h"
 #include "SharedWorldCore/Util/FileUtil.h"
 #include "SharedWorldCore/Util/Json.h"
 #include "SharedWorldCore/Util/Sha256.h"
+#include "SharedWorldCore/Util/Time.h"
 
 namespace sw
 {
@@ -360,6 +364,7 @@ namespace sw
 		Res.bDeduplicated = bHas;
 		Log.Info("RevisionUploadStarted", {{"world", Token.WorldId}, {"revision", std::to_string(Rev.Number)}, {"sha256", H.Sha256}, {"size", std::to_string(H.Size)},
 			{"dedup", bHas ? "true" : "false"}});
+		const auto UploadT0 = Store.Clock().Now();
 		if (!bHas)
 		{
 			if (Status P = ObjectStore->Put(H.Sha256, Snap); !P)
@@ -367,6 +372,26 @@ namespace sw
 				Log.Error("RevisionUploadFailed", {{"world", Token.WorldId}, {"error", P.Err().Describe()}});
 				return P.Err().Wrap("upload save");
 			}
+			if (const SaveObjectEncoding* Enc = ObjectStore->PeekLastPutEncoding())
+			{
+				Rev.SaveObject = *Enc;
+			}
+			if (const CompressStats* St = ObjectStore->PeekLastPutStats())
+			{
+				const double Ratio = St->UncompressedSize > 0
+					? static_cast<double>(St->CompressedSize) / static_cast<double>(St->UncompressedSize)
+					: 1.0;
+				Log.Info("SharedWorld/Storage", {{"revision", std::to_string(Rev.Number)}, {"raw", std::to_string(St->UncompressedSize)},
+					{"compressed", std::to_string(St->CompressedSize)}, {"ratio", std::to_string(Ratio)},
+					{"algorithm", ToString(St->Kind)}, {"level", std::to_string(St->Level)},
+					{"compress_ms", std::to_string(St->CompressMs)},
+					{"upload_ms", std::to_string(Store.Clock().Now() - UploadT0)},
+					{"dedup", "false"}, {"poor_ratio_skip", St->bSkippedPoorRatio ? "true" : "false"}});
+			}
+		}
+		else if (Current.State.Head && Current.State.Head->ObjectSha256 == H.Sha256 && Current.State.Head->SaveObject)
+		{
+			Rev.SaveObject = Current.State.Head->SaveObject;
 		}
 		if (Options.bVerifyByReadBack)
 		{
@@ -412,6 +437,7 @@ namespace sw
 		}
 		SW_TRY(MarkSynced(Rev.Number, H.Sha256));
 		Res.Revision = Rev;
+		PruneOldRevisions(Token);
 		return Res;
 	}
 
@@ -435,7 +461,136 @@ namespace sw
 		auto C = Leases->CommitRevision(Token, Rev);
 		if (!C) return C.Err();
 		Leases->Store().Log().Info("RevisionRestored", {{"world", Token.WorldId}, {"revision", std::to_string(Rev.Number)}, {"restored_from", std::to_string(From.Number)}});
+		PruneOldRevisions(Token);
 		return Rev;
+	}
+
+	void SyncEngine::PruneOldRevisions(LeaseToken& Token)
+	{
+		WorldStore& Store = Leases->Store();
+		const Logger& Log = Store.Log();
+		// SyncConfig is authoritative (default 5). World settings are rewritten to match when pruning.
+		int64_t Keep = Cfg.KeepCloudRevisions > 0 ? Cfg.KeepCloudRevisions : 5;
+		if (Keep < 5) Keep = 5;
+
+		StateSnapshot Snap;
+		{
+			auto Loaded = Store.Load();
+			if (!Loaded)
+			{
+				Log.Warn("RevisionPruneSkipped", {{"world", Token.WorldId}, {"reason", Loaded.Err().Describe()}});
+				return;
+			}
+			Snap = *Loaded;
+		}
+
+		auto Hist = History(Snap.CommitId, 100000);
+		if (!Hist)
+		{
+			Log.Warn("RevisionPruneSkipped", {{"world", Token.WorldId}, {"reason", Hist.Err().Describe()}});
+			return;
+		}
+		if (static_cast<int64_t>(Hist->size()) <= Keep)
+		{
+			return;
+		}
+
+		std::unordered_set<std::string> KeepObjects;
+		std::vector<RevisionMeta> Drop;
+		KeepObjects.reserve(static_cast<size_t>(Keep) + 8);
+
+		// Policy: keep newest N checkpoints, plus the latest final / migration /
+		// recovered / restore / import revision of each kind.
+		auto IsProtectedReason = [](const std::string& Reason) {
+			return Reason == Reason::Final || Reason == Reason::Migration ||
+				Reason == Reason::Recovered || Reason == Reason::Restore || Reason == Reason::Import;
+		};
+		std::unordered_set<std::string> KeptProtectedReason;
+		for (size_t i = 0; i < Hist->size(); ++i)
+		{
+			const RevisionMeta& R = (*Hist)[i];
+			const bool bRecent = static_cast<int64_t>(i) < Keep;
+			const bool bProtected = IsProtectedReason(R.Reason) && !KeptProtectedReason.count(R.Reason);
+			if (bProtected) KeptProtectedReason.insert(R.Reason);
+			if (bRecent || bProtected)
+			{
+				KeepObjects.insert(R.ObjectSha256);
+			}
+			else
+			{
+				Drop.push_back(R);
+			}
+		}
+		if (Snap.State.Head)
+		{
+			KeepObjects.insert(Snap.State.Head->ObjectSha256);
+		}
+		// Never delete the head revision metadata even if history order is odd.
+		Drop.erase(std::remove_if(Drop.begin(), Drop.end(), [&](const RevisionMeta& R)
+		{
+			return Snap.State.Head && R.Number == Snap.State.Head->Number;
+		}), Drop.end());
+		if (Drop.empty())
+		{
+			return;
+		}
+
+		auto Pruned = Store.Mutate([&](WorldState& S, TimeMs /*Now*/, WorldStore::Mutation& M) -> Status
+		{
+			const std::optional<Lease>& L = S.CurrentLease;
+			if (!L || S.Generation != Token.Generation || L->Generation != Token.Generation || L->Nonce != Token.Nonce)
+			{
+				return MakeError(ErrorCode::Fenced, "lease lost: another host has taken over this world");
+			}
+			for (const RevisionMeta& R : Drop)
+			{
+				M.ExtraChanges.push_back({R.Path(), std::nullopt});
+			}
+			// Persist retention policy so other clients / future hosts share the same keep count.
+			if (auto Settings = Store.LoadSettings(Snap.CommitId); Settings.Ok())
+			{
+				WorldSettings Next = *Settings;
+				if (Next.KeepRevisions != Keep)
+				{
+					Next.KeepRevisions = Keep;
+					if (Next.Validate())
+					{
+						M.ExtraChanges.push_back({Paths::Settings, json::Serialize(Next.ToJson(), 2)});
+					}
+				}
+			}
+			M.Message = "Prune Shared World history (keep " + std::to_string(Keep) + " revisions)";
+			return {};
+		});
+		if (!Pruned)
+		{
+			Log.Warn("RevisionPruneFailed", {{"world", Token.WorldId}, {"error", Pruned.Err().Describe()},
+				{"would_drop", std::to_string(Drop.size())}, {"keep", std::to_string(Keep)}});
+			return;
+		}
+
+		int RemovedObjects = 0;
+		if (auto Listed = ObjectStore->List(); Listed.Ok())
+		{
+			for (const std::string& Sha : *Listed)
+			{
+				if (KeepObjects.count(Sha))
+				{
+					continue;
+				}
+				if (Status R = ObjectStore->Remove(Sha); R.Ok())
+				{
+					++RemovedObjects;
+				}
+				else
+				{
+					Log.Warn("RevisionObjectPruneFailed", {{"world", Token.WorldId}, {"sha256", Sha}, {"error", R.Err().Describe()}});
+				}
+			}
+		}
+
+		Log.Info("RevisionPruned", {{"world", Token.WorldId}, {"kept", std::to_string(Keep)},
+			{"dropped_revisions", std::to_string(Drop.size())}, {"removed_objects", std::to_string(RemovedObjects)}});
 	}
 
 	Result<std::vector<RevisionMeta>> SyncEngine::History(const std::string& CommitId, size_t Max)

@@ -104,9 +104,10 @@ namespace sw
 
 	struct LeaseConfig
 	{
-		TimeMs TTL = Seconds(90);
+		/** Host must heartbeat within this window; shorter = faster crash takeover (MW2-like). */
+		TimeMs TTL = Seconds(45);
 		/** Added when judging SOMEONE ELSE's lease expired (clock skew tolerance). */
-		TimeMs SkewGrace = Seconds(30);
+		TimeMs SkewGrace = Seconds(15);
 		/** How long a planned-migration successor reservation lasts. */
 		TimeMs HandoffWindow = Seconds(120);
 	};
@@ -147,6 +148,7 @@ namespace sw
 		std::optional<LeasePhase> Phase;
 		std::optional<JoinInfo> Join;
 		bool ClearJoin = false;
+		std::optional<bool> HostReady;
 		std::optional<std::vector<SessionPlayer>> Players;
 	};
 

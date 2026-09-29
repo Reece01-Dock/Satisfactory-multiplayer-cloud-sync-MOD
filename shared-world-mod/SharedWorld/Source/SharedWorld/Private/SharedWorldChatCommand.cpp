@@ -12,7 +12,7 @@ ASharedWorldChatCommand::ASharedWorldChatCommand()
 	CommandName = TEXT("sharedworld");
 	Aliases.Add(TEXT("sw"));
 	Usage = NSLOCTEXT("SharedWorld", "ChatUsage",
-		"/sharedworld status|history|players|save|stop|migrate <player>|allow <player> [role]|remove <player>|open|restrict|granthost <github-user>|log");
+		"/sharedworld status|verify|history|players|save|stop|migrate <player|auto>|allow <player> [role]|remove <player>|open|restrict|granthost <github-user>|log|diag|dev <action>");
 	MinNumberOfArguments = 0;
 	bOnlyUsableByPlayer = true;
 }
@@ -42,6 +42,11 @@ EExecutionStatus ASharedWorldChatCommand::ExecuteCommand_Implementation(UCommand
 	if (Verb == TEXT("status"))
 	{
 		Sender->SendChatMessage(SW->DescribeActiveSession());
+		return EExecutionStatus::COMPLETED;
+	}
+	if (Verb == TEXT("verify"))
+	{
+		Sender->SendChatMessage(SW->DebugVerifyHost(Arg.IsEmpty() ? SW->GetActiveWorldId() : Arg));
 		return EExecutionStatus::COMPLETED;
 	}
 	if (WorldId.IsEmpty())
@@ -84,6 +89,18 @@ EExecutionStatus ASharedWorldChatCommand::ExecuteCommand_Implementation(UCommand
 		Sender->SendChatMessage(SW->RecentLog(12));
 		return EExecutionStatus::COMPLETED;
 	}
+	if (Verb == TEXT("diag"))
+	{
+		Sender->SendChatMessage(SW->GetHostMigrationDiagnostics(WorldId));
+		return EExecutionStatus::COMPLETED;
+	}
+#if !UE_BUILD_SHIPPING
+	if (Verb == TEXT("dev"))
+	{
+		Sender->SendChatMessage(SW->DevInject(WorldId, Arg.IsEmpty() ? TEXT("leave") : Arg));
+		return EExecutionStatus::COMPLETED;
+	}
+#endif
 	if (Verb == TEXT("open") || Verb == TEXT("restrict"))
 	{
 		SW->SetOpenMembership(WorldId, Verb == TEXT("open"), Reply);
@@ -101,7 +118,7 @@ EExecutionStatus ASharedWorldChatCommand::ExecuteCommand_Implementation(UCommand
 	}
 	if (Verb == TEXT("allow"))
 	{
-		sw::Role Role = sw::Role::Member;
+		sw::Role AssignedRole = sw::Role::Member;
 		if (Arguments.Num() > 2)
 		{
 			auto Parsed = sw::ParseRole(TCHAR_TO_UTF8(*Arguments[2].ToLower()));
@@ -110,9 +127,9 @@ EExecutionStatus ASharedWorldChatCommand::ExecuteCommand_Implementation(UCommand
 				Sender->SendChatMessage(TEXT("Role must be member, admin or viewer."), FLinearColor::Red);
 				return EExecutionStatus::BAD_ARGUMENTS;
 			}
-			Role = *Parsed;
+			AssignedRole = *Parsed;
 		}
-		SW->AllowPlayer(WorldId, Arg, Role, Reply);
+		SW->AllowPlayer(WorldId, Arg, AssignedRole, Reply);
 		return EExecutionStatus::COMPLETED;
 	}
 	if (Verb == TEXT("remove"))

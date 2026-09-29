@@ -57,6 +57,20 @@ SW_TEST(GitHub_RepositoryContractAndEmptyRepoInit)
 	EXPECT_EQ((*Log)[0].Parent, *C1);
 }
 
+SW_TEST(GitHub_AutoCreatesMissingPrivateRepository)
+{
+	auto Fake = std::make_shared<FakeGitHub>();
+	Fake->RepoExists = false; // simulate 404 on github.com/owner/repo
+	auto R = Repo(Fake);
+	auto C1 = R->Commit("", {{"world.json", std::string("{}")}, {"state/current.json", std::string("v1")}}, "create");
+	ASSERT_OK(C1);
+	EXPECT_TRUE(Fake->RepoExists.load());
+	EXPECT_EQ(Fake->BranchHead("shared-world/our-factory"), *C1);
+	// Second ensure is a no-op GET success.
+	auto C2 = R->Commit(*C1, {{"state/current.json", std::string("v2")}}, "rev");
+	ASSERT_OK(C2);
+}
+
 // Separate provider instances = separate players' PCs.
 SW_TEST(GitHub_ConcurrentCasNeverLosesUpdates)
 {

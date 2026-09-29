@@ -70,6 +70,7 @@ SW_TEST(Model_StateRoundTripAndValidation)
 	L.ExpiresAt = L.AcquiredAt + 90000;
 	L.BaseRevision = 5;
 	L.Phase = LeasePhase::Hosting;
+	L.bHostReady = true;
 	L.Join = JoinInfo{"online-session-id", "EOS:abc", "EOS"};
 	L.Players = {{"Reece", "player-1"}};
 	S.CurrentLease = L;
