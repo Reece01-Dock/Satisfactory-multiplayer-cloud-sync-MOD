@@ -1,31 +1,14 @@
 # Native architecture: the mod is the application
 
-Status: **adopted** (supersedes the helper-centric design in `architecture.md`,
-which stays valid as the description of the reference implementation).
+Everything runs inside the SML mod — no helper process, no localhost IPC,
+no external `git.exe`.
 
-## 0. Audit of the starting point
+Behavioural invariants: exactly one host under simultaneous Play; generation
+fencing of every write; revision N never replaces N+1; verified, atomic local
+replacement; structural save validation; unsynced-progress recovery; conflict
+backups instead of overwrites; ambiguous-commit resolution.
 
-| Area | State at audit (commit `b80c168`) |
-|---|---|
-| `shared-world-helper/` (Go) | Complete reference implementation: CAS record, lease + fencing, verified download, fenced upload, recovery, world state machine, localhost IPC. 45+ tests incl. races 1–6. Windows CI found one real bug (fsync on a read-only handle), fixed in `b80c168`. |
-| `shared-world-mod/` (C++) | Thin client: polls the helper over HTTP, launches `shared-world-helper.exe`, drives `LoadSaveFile` / `JoinSession`. Not compiled. |
-| `docs/architecture.md`, `docs/ipc-protocol.md` | Describe helper + IPC. IPC is now slated for removal. |
-| `STATUS.md` | World creation only via IPC; no cloud provider; mod unverified in game. |
-
-What must be preserved (the behavioural spec): exactly one host under
-simultaneous Play; generation fencing of every write; revision N never
-replaces N+1; verified, atomic local replacement; structural save
-validation (every zlib chunk); unsynced-progress recovery; conflict backups
-instead of overwrites; ambiguous-commit resolution.
-
-## 1. Current architecture
-
-```
-Satisfactory ── SharedWorld mod ──HTTP 127.0.0.1──► shared-world-helper.exe ──► filesystem "cloud"
-   (UI, game hooks)   (poll, events)            (state machine, lease, sync)
-```
-
-## 2. Target architecture
+## 1. Architecture
 
 ```
 Satisfactory
@@ -35,7 +18,7 @@ Satisfactory
         │  Auth/   GitHub device flow, Windows Credential Manager
         │  Platform adapters: FHttpModule → IHttpClient, task graph → worker threads
         ▼
-  SharedWorldCore (UE module "SharedWorldCore", pure C++20, no UE headers) ← worker threads
+  SharedWorldCore (pure C++20, no UE headers) ← worker threads
         │  World/     session engine: HOST/JOIN decision, state machine
         │  Lease/     acquire / renew / release / fencing generations
         │  Revision/  revision model, history, restore-as-new-revision
@@ -53,8 +36,6 @@ Satisfactory
               ├─ Memory (tests)          ├─ Filesystem (objects/sha256/ab/<hash>)
               └─ GitHub Releases (assets named <sha256>.sav)
 ```
-
-No helper process, no localhost server, no external `git.exe`.
 
 ### Steam / Epic
 
@@ -111,9 +92,9 @@ native subsystem passes the same tests; it is no longer started by the mod.
   Four players downloading a 50 MB save daily ≈ 6 GB/month: too tight.
 * Release assets: each < 2 GiB, 1000 per release, **no limit on total
   size or bandwidth**; downloadable with the same token.
-* **Benchmark** (`shared-world-helper/tools/benchsave`, synthetic saves in
-  the real container format, 1 % of objects changed + 500 new per
-  revision): 10 revisions = 86.8 MiB raw → 86.7 MiB after
+* **Benchmark** (synthetic saves in the real container format, 1 % of
+  objects changed + 500 new per revision; see `docs/compression-benchmark.md`):
+  10 revisions = 86.8 MiB raw → 86.7 MiB after
   `git gc --aggressive`; **0 of 238 compressed chunks reused** between
   consecutive revisions. zlib chunking defeats Git deltas: every revision
   costs its full size in Git. (Synthetic; to be re-run on real saves.)

@@ -1,7 +1,6 @@
 # Satisfactory Shared World
 
-Successor to the batch-file cloud sync on the `Page` branch. One button in
-the main menu — **Play Shared World** — and the mod decides:
+One button in the main menu — **Play Shared World** — and the mod decides:
 
 ```
 friend already hosting  →  join them (nothing is downloaded)
@@ -24,20 +23,14 @@ a new revision.
 | Directory | What |
 |---|---|
 | `shared-world-mod/SharedWorld/Source/SharedWorldCore/` | The engine, pure C++20 (no UE headers) |
-| `shared-world-mod/SharedWorld/Source/SharedWorld/` | UE/SML module: adapters, subsystem, menu panel, chat commands |
-| `shared-world-mod/core-tests/` | Native CMake build + 86 tests of the core |
-| `shared-world-helper/` | Legacy Go helper: reference implementation and test oracle |
-| `docs/native-architecture.md` | Current design |
-| `docs/research.md` | Findings: old workflow, SML/game APIs, save format, join paths |
-| `docs/architecture.md`, `docs/ipc-protocol.md` | Legacy helper design (reference) |
+| `shared-world-mod/SharedWorld/Source/SharedWorld/` | UE/SML module: adapters, subsystem, menu UI, chat commands |
+| `shared-world-mod/core-tests/` | Native CMake build + core tests |
+| `docs/` | Setup, architecture, testing, UI notes |
 | `STATUS.md` | What works, what is verified, what still needs the game |
 
 **Status: development preview.** The core is implemented and tested; the
-Unreal layer is written but has not been compiled or run in game yet.
+Unreal layer is written but has not been fully validated in game yet.
 Read `STATUS.md` before using it.
-
-The legacy website and batch scripts (`index.html`, `Downloads/`, …) are
-kept unchanged for reference.
 
 The original project is by Vojtak42; this repository is licensed under the
 terms in `LICENSE`.

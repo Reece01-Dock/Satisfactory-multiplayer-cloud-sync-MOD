@@ -21,17 +21,16 @@ mods compile against, so an API found there is one a mod can call.
 
 ---
 
-## 1. The existing project (BAT workflow)
+## 1. The previous BAT workflow (historical)
 
-`Downloads/Satisfactorysync-template-{Steam,EPIC}.bat` do:
+The original project used rclone batch scripts that:
 
-1. `rclone ls satisfactory:online` — if the folder exists, "someone is online", stop.
-2. `rclone mkdir satisfactory:online` — take the "lock".
-3. Rename the player's own save folder aside, `rclone sync` the cloud `MP`
-   folder down, rename it into the player's save folder.
-4. Start the game, poll `tasklist` until it exits, sleep 30 s.
-5. `rclone sync` the folder back up, `rclone rmdir satisfactory:online`,
-   rename the player's own saves back.
+1. Checked for an `online` lock folder — if present, "someone is online", stop.
+2. Created the lock folder.
+3. Renamed the player's own save folder aside, synced the cloud `MP`
+   folder down, renamed it into the player's save folder.
+4. Started the game, polled until it exited, slept 30 s.
+5. Synced the folder back up, removed the lock, restored the player's own saves.
 
 Concepts worth keeping: keep multiplayer saves separate from the player's
 own saves; download before playing and upload after; any cloud provider;

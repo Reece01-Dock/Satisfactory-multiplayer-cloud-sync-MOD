@@ -5,15 +5,12 @@ of an SML 3.12 development project and package with Alpakit.
 
 | File | Responsibility |
 |---|---|
-| `SharedWorldSubsystem` | Game-instance coordinator: polls the helper, reacts to session states, keepalives |
-| `SharedWorldIPCClient` | Discovery file, auto-launch of the bundled helper, authenticated HTTP |
-| `SharedWorldHostController` | Loads the verified save, publishes the session id, `SaveGame` → report, checkpoints, final upload |
-| `SharedWorldJoinManager` | Joins via `ResolveOnlineSession` + `UCommonSessionStatics::JoinSession` (or `RawAddress`) |
-| `SharedWorldPanel` | Main-menu "Shared Worlds" panel, built in C++ UMG |
+| `SharedWorldSubsystem` | Game-instance coordinator: ticks sessions, reacts to host/join/migrate states |
+| `SharedWorldHostController` | Loads the verified save, publishes the session id, checkpoints, final upload |
+| `SharedWorldJoinManager` | Joins via `ResolveOnlineSession` + `UCommonSessionStatics::JoinSession` |
+| `SharedWorldPanel` / `UI/` | Main-menu Shared Worlds browser and session UI (C++ UMG) |
 | `SharedWorldRootModules` | Native SML root menu/game world modules |
-| `SharedWorldChatCommand` | `/sharedworld status|save|stop` (host only for save/stop) |
-| `SharedWorldTypes` | Mirrors of the helper's IPC JSON |
+| `SharedWorldChatCommand` | `/sharedworld status|save|stop|…` |
+| `SharedWorldCore/` | Pure C++20 engine (lease, sync, GitHub, migration) |
 
-Every game/SML API used was checked against the SML `dev` headers
-(commit `ae723cf`); see `docs/research.md`. The mod has **not** been
-compiled or run in this repository's CI (no Unreal toolchain); see `STATUS.md`.
+See `docs/` and `STATUS.md` in the repo root for architecture and status.

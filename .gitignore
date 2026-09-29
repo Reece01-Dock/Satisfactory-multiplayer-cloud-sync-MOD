@@ -1,7 +1,3 @@
-# Helper build output
-/shared-world-helper/shared-world-helper
-/shared-world-helper/*.exe
-/shared-world-mod/SharedWorld/ThirdParty/SharedWorldHelper/Win64/*.exe
 # Unreal build output
 /shared-world-mod/SharedWorld/Binaries/
 /shared-world-mod/SharedWorld/Intermediate/

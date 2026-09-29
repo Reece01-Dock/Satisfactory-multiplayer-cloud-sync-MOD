@@ -12,9 +12,7 @@ migration and crash recovery, membership, local settings and storage
 providers. The `SharedWorld` UE module is a thin adapter: FHttpModule,
 UE_LOG and Windows Credential Manager behind the core's interfaces, and a
 game-instance subsystem that ticks one `sw::WorldSession` per world and
-drives the game (load save / join / save) when a session asks. The Go
-helper stays in the repo as the reference implementation and test oracle
-(its save validator produced the shared conformance corpus). Design:
+drives the game (load save / join / save) when a session asks. Design:
 `docs/native-architecture.md`. UI integration: `docs/ui-integration.md`.
 
 **Who does what with Steam / Epic vs storage:**
