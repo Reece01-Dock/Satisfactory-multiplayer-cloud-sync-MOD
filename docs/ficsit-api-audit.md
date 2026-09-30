@@ -83,7 +83,7 @@ Status: GOOD / SHOULD REFACTOR / UNSUPPORTED-HACK / UNKNOWN / VERSION-SENSITIVE.
 * **Documentation:** `UFGSaveSystem::GetAbsolutePathForSaveGame` (public) is the game's own name→path resolver.
 * **Recommended implementation (done):** before `LoadSaveGameHeaderSync`, resolve the name with `GetAbsolutePathForSaveGame` and refuse (`host_load_failed … save path mismatch`, both paths logged) if it is not the file we wrote; if the game cannot resolve it, log `save_path_unverified` and continue. No paths are computed by hand for loading.
 * **Risk:** Medium (a false mismatch, e.g. path canonicalisation on Windows, blocks hosting — `FPaths::IsSamePath` is used on absolute paths). **Behaviour change:** refuses to host on mismatch. Runtime validation item #3 in `STATUS.md` still applies.
-* **Still open:** `ResolveExistingSavePath`'s recursive `FindFilesRecursive(...)[0]` fallback (used when *importing a personal save*) is order-dependent if two saves share a name.
+* `ResolveExistingSavePath`'s recursive fallback (used when *importing a personal save*) now picks the most recently written match instead of directory order.
 
 ### F5 — Core build was red under GCC 13 Release — **P0 (CI parity), FIXED**
 
@@ -101,9 +101,9 @@ Status: GOOD / SHOULD REFACTOR / UNSUPPORTED-HACK / UNKNOWN / VERSION-SENSITIVE.
 
 `TickPublishSession` polls `GetGameSession()` every 2 s for 90 s, then publishes "HostReady without join data". A delegate-driven signal would remove the guess, but no supported callback is verifiable here. Kept; the timeout path is already safe (`friends_list_fallback`).
 
-### F9 — Checkpoint interval — **P2, DOCUMENTED**
+### F9 — Checkpoint interval — **P2, FIXED (UE wiring not compiled)**
 
-Hard-coded 5 min in `SharedWorldHostController.cpp` (STATUS/research text says 15 min). Should be a setting (`CheckpointIntervalSeconds` in the core `LocalSettings`) — needs a settings-UI change; deferred (§4).
+Was hard-coded 5 min. Now `LocalSettings::CheckpointIntervalSeconds` (settings.json key `checkpointIntervalSeconds`, default 300, clamped to 60–3600 in the core, tested incl. legacy files without the key); `USharedWorldHostController` reads it via `GetCheckpointIntervalSeconds()`. No settings UI yet: edit the file.
 
 ### F10 — SML config — **P3, BLOCKED ON EDITOR**
 
@@ -138,7 +138,8 @@ Original personal saves are never opened for writing here; the runtime save is a
 | P0 | F5 core build red | fixed |
 | P1 | F3 session-definition shim | isolated + validated |
 | P1 | UI reflection (F11), `Start()` semantics, session-id round trip | needs game/headers |
-| P2 | F6/F7/F8/F9 | documented; need core `LinkSample` change, settings, header access |
+| P2 | F9 | fixed |
+| P2 | F6/F7/F8 | documented; need core `LinkSample` change, settings, header access |
 | P3 | Log categories, SML config | deferred |
 
 ## 5. Packaging / dependencies
@@ -149,5 +150,5 @@ Original personal saves are never opened for writing here; the runtime save is a
 
 ## 6. Verification performed
 
-* `SharedWorldCore` + tests: 153 tests, 0 failed (GCC 13, Release; was 152 + a failing build before this audit).
+* `SharedWorldCore` + tests: 154 tests, 0 failed (GCC 13, Release; was 152 + a failing build before this audit).
 * UE module: **not compiled** (no headers). All UE edits reviewed by hand; expect small compile fixes.

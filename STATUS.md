@@ -39,7 +39,7 @@ drives the game (load save / join / save) when a session asks. Design:
 | H2 Native menu UI (main menu entry, browser, Manage Session, migration overlay) | **Written, not compiled** — see `docs/ui-integration.md` |
 | I Runtime validation in game | **Not started** — needs the game |
 
-## Verified behaviour (153 core tests, `shared-world-mod/core-tests`)
+## Verified behaviour (154 core tests, `shared-world-mod/core-tests`)
 
 Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core.yml`).
 

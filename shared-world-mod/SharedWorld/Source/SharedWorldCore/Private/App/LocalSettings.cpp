@@ -159,12 +159,20 @@ namespace sw
 		return false;
 	}
 
+	int LocalSettings::ClampCheckpointSeconds(int64_t Seconds)
+	{
+		if (Seconds < MinCheckpointSeconds) return MinCheckpointSeconds;
+		if (Seconds > MaxCheckpointSeconds) return MaxCheckpointSeconds;
+		return static_cast<int>(Seconds);
+	}
+
 	Value LocalSettings::ToJson() const
 	{
 		Value V;
 		V.Set("version", int64_t(CurrentVersion));
 		V.Set("githubLogin", GitHubLogin);
 		V.Set("welcomeDone", bWelcomeDone);
+		V.Set("checkpointIntervalSeconds", int64_t(CheckpointIntervalSeconds));
 		if (DefaultProvider) V.Set("defaultProvider", DefaultProvider->ToJson());
 		json::Array A;
 		for (const WorldEntry& W : Worlds)
@@ -205,6 +213,7 @@ namespace sw
 		LocalSettings S;
 		SW_ASSIGN(S.GitHubLogin, Text(V, "githubLogin", 64));
 		if (!S.GitHubLogin.empty() && !ValidGitHubName(S.GitHubLogin)) return MakeError(ErrorCode::Invalid, "invalid GitHub login");
+		if (const Value* Ci = V.Find("checkpointIntervalSeconds"); Ci && Ci->IsNumber()) S.CheckpointIntervalSeconds = LocalSettings::ClampCheckpointSeconds(Ci->AsInt());
 		if (const Value* Wd = V.Find("welcomeDone"); Wd && Wd->IsBool()) S.bWelcomeDone = Wd->AsBool();
 		if (const Value* Dp = V.Find("defaultProvider"))
 		{

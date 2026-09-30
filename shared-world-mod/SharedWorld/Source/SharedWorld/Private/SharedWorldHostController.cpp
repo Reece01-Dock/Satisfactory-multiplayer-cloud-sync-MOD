@@ -30,9 +30,6 @@ namespace
 {
 	/** How long to wait for the hosted online session to appear before publishing without join data. */
 	constexpr double PublishTimeoutSeconds = 90.0;
-	/** Interval between checkpoint uploads while hosting. */
-	constexpr float CheckpointIntervalSeconds = 5.0f * 60.0f; // safer loss window than 15m; still waits for SaveGame completion
-
 }
 
 void USharedWorldHostController::Init(USharedWorldSubsystem* InOwner)
@@ -152,7 +149,8 @@ void USharedWorldHostController::OnGameWorldReady(UWorld* World)
 		Session->OnHostPublishingSession();
 	}
 	PublishTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &USharedWorldHostController::TickPublishSession), 2.0f);
-	CheckpointTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &USharedWorldHostController::TickCheckpoint), CheckpointIntervalSeconds);
+	CheckpointTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &USharedWorldHostController::TickCheckpoint),
+		Owner ? Owner->GetCheckpointIntervalSeconds() : static_cast<float>(sw::LocalSettings::DefaultCheckpointSeconds));
 	(void)EnsureInviteBridge();
 	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/Host] event=host_world_ready world=%s"), *WorldId);
 }

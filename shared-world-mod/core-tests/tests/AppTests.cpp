@@ -149,3 +149,36 @@ SW_TEST(App_GitHubInviteCollaborator)
 	EXPECT_ERR(InviteGitHubCollaborator(Fake, C, "../admin"), ErrorCode::Invalid);
 	EXPECT_ERR(InviteGitHubCollaborator(Fake, C, "a.b"), ErrorCode::Invalid);
 }
+
+SW_TEST(App_CheckpointIntervalIsClampedAndRoundTrips)
+{
+	EXPECT_EQ(LocalSettings::ClampCheckpointSeconds(0), LocalSettings::MinCheckpointSeconds);
+	EXPECT_EQ(LocalSettings::ClampCheckpointSeconds(-5), LocalSettings::MinCheckpointSeconds);
+	EXPECT_EQ(LocalSettings::ClampCheckpointSeconds(1000000), LocalSettings::MaxCheckpointSeconds);
+	EXPECT_EQ(LocalSettings::ClampCheckpointSeconds(600), 600);
+
+	LocalSettings S;
+	EXPECT_EQ(S.CheckpointIntervalSeconds, LocalSettings::DefaultCheckpointSeconds);
+	S.CheckpointIntervalSeconds = 900;
+	auto Back = LocalSettings::FromJson(S.ToJson());
+	ASSERT_OK(Back);
+	EXPECT_EQ(Back->CheckpointIntervalSeconds, 900);
+
+	// A hand-edited file cannot turn checkpoints off or make them spam.
+	json::Value V = S.ToJson();
+	V.Set("checkpointIntervalSeconds", int64_t(1));
+	auto Low = LocalSettings::FromJson(V);
+	ASSERT_OK(Low);
+	EXPECT_EQ(Low->CheckpointIntervalSeconds, LocalSettings::MinCheckpointSeconds);
+
+	// Files written before the field existed keep the default.
+	std::string Text = json::Serialize(S.ToJson());
+	const size_t At = Text.find("\"checkpointIntervalSeconds\":900,");
+	ASSERT_TRUE(At != std::string::npos);
+	Text.erase(At, std::string("\"checkpointIntervalSeconds\":900,").size());
+	auto Parsed = json::Parse(Text);
+	ASSERT_OK(Parsed);
+	auto Legacy = LocalSettings::FromJson(*Parsed);
+	ASSERT_OK(Legacy);
+	EXPECT_EQ(Legacy->CheckpointIntervalSeconds, LocalSettings::DefaultCheckpointSeconds);
+}

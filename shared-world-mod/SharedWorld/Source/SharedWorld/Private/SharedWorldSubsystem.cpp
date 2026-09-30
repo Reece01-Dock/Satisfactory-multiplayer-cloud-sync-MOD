@@ -130,6 +130,12 @@ namespace
 		IFileManager::Get().FindFilesRecursive(Found, *Root, *FileName, true, false, false);
 		if (Found.Num() > 0)
 		{
+			// Several folders can hold the same name (id subfolders): pick the most
+			// recently written one so the choice never depends on directory order.
+			Found.Sort([](const FString& A, const FString& B)
+			{
+				return IFileManager::Get().GetTimeStamp(*A) > IFileManager::Get().GetTimeStamp(*B);
+			});
 			return FPaths::ConvertRelativePathToFull(Found[0]);
 		}
 		return FString();

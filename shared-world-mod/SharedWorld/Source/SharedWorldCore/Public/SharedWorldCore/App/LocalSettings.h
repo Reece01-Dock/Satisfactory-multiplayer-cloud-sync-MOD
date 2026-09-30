@@ -70,6 +70,13 @@ namespace sw
 		bool bWelcomeDone = false;
 		/** Auto-selected storage for new worlds (folder or GitHub). Empty = derive at runtime. */
 		std::optional<ProviderConfig> DefaultProvider;
+		/** How often the host saves and uploads a checkpoint. Always within [Min, Max]. */
+		static constexpr int MinCheckpointSeconds = 60;
+		static constexpr int MaxCheckpointSeconds = 60 * 60;
+		static constexpr int DefaultCheckpointSeconds = 5 * 60;
+		int CheckpointIntervalSeconds = DefaultCheckpointSeconds;
+		/** Clamps into [Min, Max]; a hand-edited value can never disable or hammer checkpoints. */
+		static int ClampCheckpointSeconds(int64_t Seconds);
 		/** Invites waiting for Accept / Decline on this PC. */
 		std::vector<PendingInvite> PendingInvites;
 

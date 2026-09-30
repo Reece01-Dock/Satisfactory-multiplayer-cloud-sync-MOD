@@ -191,6 +191,8 @@ public:
 	void GrantHosting(const FString& WorldId, const FString& GitHubUsername, FDone OnDone);
 
 	/** Non-empty when the local world list could not be loaded (shown above the list). */
+	/** Host checkpoint cadence from settings.json (clamped by SharedWorldCore). */
+	float GetCheckpointIntervalSeconds() const { return static_cast<float>(Settings.CheckpointIntervalSeconds); }
 	const FString& GetSettingsProblem() const { return SettingsProblem; }
 
 	/**
