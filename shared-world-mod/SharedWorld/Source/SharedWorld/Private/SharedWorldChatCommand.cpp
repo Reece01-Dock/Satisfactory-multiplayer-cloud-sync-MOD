@@ -46,7 +46,7 @@ EExecutionStatus ASharedWorldChatCommand::ExecuteCommand_Implementation(UCommand
 	}
 	if (Verb == TEXT("verify"))
 	{
-		Sender->SendChatMessage(SW->DebugVerifyHost(Arg.IsEmpty() ? SW->GetActiveWorldId() : Arg));
+		SW->DebugVerifyHost(Arg.IsEmpty() ? SW->GetActiveWorldId() : Arg, Reply);
 		return EExecutionStatus::COMPLETED;
 	}
 	if (WorldId.IsEmpty())

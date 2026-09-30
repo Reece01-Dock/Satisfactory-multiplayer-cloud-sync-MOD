@@ -9,7 +9,9 @@
 #include "SharedWorldCore/App/LocalSettings.h"
 #include "SharedWorldCore/HostMigration/Diagnostics.h"
 #include "SharedWorldCore/HostMigration/HostMigration.h"
+#include "SharedWorldCore/Lease/Lease.h"
 #include "SharedWorldCore/Providers/GitHubAuth.h"
+#include "SharedWorldCore/Util/RefreshCache.h"
 #include "SharedWorldCore/Util/TaskQueue.h"
 #include "SharedWorldCore/World/WorldSession.h"
 #include "SharedWorldTypes.h"
@@ -25,6 +27,17 @@ class UNetDriver;
 
 DECLARE_MULTICAST_DELEGATE(FOnSharedWorldChanged);
 
+/**
+ * Last cloud state document seen for one world, for game-thread readers.
+ *
+ * WorldStore::Load() is a network round trip (GitHub / folder). The migration
+ * overlay needs "is a handoff in progress?" every second, so it reads this
+ * cache and never calls Load() itself. USharedWorldSubsystem::RefreshCloudCache
+ * refills it on the background queue. Shared by shared_ptr so an in-flight
+ * refresh outlives the runtime that requested it.
+ */
+using FSharedWorldCloudCache = sw::RefreshCache<sw::StateSnapshot>;
+
 /** Everything needed to run one configured world: its own storage, lease manager and session. */
 struct FSharedWorldRuntime
 {
@@ -36,6 +49,8 @@ struct FSharedWorldRuntime
 	TUniquePtr<sw::WorldSession> Session;
 	/** Continuous host ranking + migration state machine (same core as tests). */
 	TUniquePtr<sw::HostMigrationEngine> HostMigration;
+	/** Game-thread view of the cloud state; see FSharedWorldCloudCache. */
+	std::shared_ptr<FSharedWorldCloudCache> CloudCache = std::make_shared<FSharedWorldCloudCache>();
 	/** Set while CreateWorldFromSave runs: Play is refused. */
 	bool bCreating = false;
 	/** Refreshed on a background thread; read under USharedWorldSubsystem::SummaryMutex. */
@@ -203,8 +218,11 @@ public:
 	FString RequestCheckpoint();
 	FString RequestStop();
 	FString DescribeActiveSession() const;
-	/** Non-mutating host reachability probe for /sharedworld verify. */
-	FString DebugVerifyHost(const FString& WorldId = FString());
+	/**
+	 * Non-mutating host reachability probe for /sharedworld verify. Runs off the
+	 * game thread (cloud read + session resolve); OnDone runs on the game thread.
+	 */
+	void DebugVerifyHost(const FString& WorldId, FDone OnDone);
 	/** HostController → HostResponder when the session is published. */
 	void NotifyHostResponderReady(const FString& WorldId, const FString& SessionId, int64 Generation, int64 Revision, int32 PlayerCount);
 	void NotifyHostResponderCleared();
@@ -237,6 +255,8 @@ private:
 	sw::LocalVersions MyVersions() const;
 	void SaveSettings();
 	/** Runs Work on the background queue; Then runs on the game thread if the subsystem still exists. */
+	/** Starts a background refill of Runtime.CloudCache when it is stale (never blocks). */
+	void RefreshCloudCache(FSharedWorldRuntime& Runtime) const;
 	void RunInBackground(TFunction<TPair<bool, FString>()> Work, TFunction<void(USharedWorldSubsystem&, bool, const FString&)> Then);
 	/** Resolves a connected player's name/id to a platform player id (or returns Who). */
 	FString ResolvePlayerId(const FString& Who, FString& OutDisplayName) const;

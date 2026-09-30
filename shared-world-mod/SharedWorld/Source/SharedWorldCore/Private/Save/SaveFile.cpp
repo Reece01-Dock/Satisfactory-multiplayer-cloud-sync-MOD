@@ -169,9 +169,8 @@ namespace sw::save
 				const size_t Off = HeaderLen == 49 ? 1 : 0;
 				if (HeaderLen == 49 && static_cast<uint8_t>(R.Data[Base + 16]) != CompressionZlib) return Bad(Where + "unsupported compression");
 				Reader Fields{R.Data, Base + 32 + Off};
-				int64_t Compressed, Uncompressed;
-				Fields.I64(Compressed);
-				Fields.I64(Uncompressed);
+				int64_t Compressed = 0, Uncompressed = -1;
+				if (!Fields.I64(Compressed) || !Fields.I64(Uncompressed)) return Bad(Where + "truncated chunk header");
 				R.Pos = Base + HeaderLen;
 				if (Compressed <= 0 || Compressed > MaxChunkBytes || Uncompressed < 0 || Uncompressed > MaxChunkBytes) return Bad(Where + "implausible chunk sizes");
 				if (!R.Has(static_cast<size_t>(Compressed))) return Bad(Where + "truncated compressed data");
@@ -259,15 +258,15 @@ namespace sw::save
 			SW_ASSIGN(Age, file::AgeSeconds(Path));
 			return {};
 		};
-		int64_t LastSize;
-		double LastAge;
+		int64_t LastSize = 0;
+		double LastAge = 0;
 		SW_TRY(Sample(LastSize, LastAge));
 		auto StableSince = Clock::now();
 		while (true)
 		{
 			std::this_thread::sleep_for(std::chrono::milliseconds((std::max<TimeMs>)(Quiet / 4, 5)));
-			int64_t Size;
-			double Age;
+			int64_t Size = 0;
+			double Age = 0;
 			SW_TRY(Sample(Size, Age));
 			// A rewrite shows up as a size change or the age going backwards.
 			if (Size != LastSize || Age + 0.001 < LastAge)

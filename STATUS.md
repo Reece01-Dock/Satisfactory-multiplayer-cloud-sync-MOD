@@ -39,7 +39,7 @@ drives the game (load save / join / save) when a session asks. Design:
 | H2 Native menu UI (main menu entry, browser, Manage Session, migration overlay) | **Written, not compiled** — see `docs/ui-integration.md` |
 | I Runtime validation in game | **Not started** — needs the game |
 
-## Verified behaviour (104+ core tests, `shared-world-mod/core-tests`)
+## Verified behaviour (153 core tests, `shared-world-mod/core-tests`)
 
 Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core.yml`).
 
@@ -71,6 +71,8 @@ Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core
 * Chat: `/sharedworld status | history | players | save | stop | migrate <player> | allow <player> [role] | remove <player> | open | restrict | granthost <github-user> | log`.
 
 ## Known limitations
+
+* **API audit (2026-09-30):** see `docs/ficsit-api-audit.md` and `docs/ficsit-compatibility.md`. docs.ficsit.app was unreachable, so findings rest on the repo, `docs/research.md` and headers; UE edits from the audit are **not compiled**.
 
 * **Not compiled.** Written against SML 3.12 / UE 5.3 headers that were checked earlier, plus standard engine APIs; expect small compile fixes.
 * **GitHub OAuth client id is empty** (`GitHubClientId` in `SharedWorldSubsystem.cpp`): the project owner must register a GitHub OAuth App with device flow enabled. Until then only folder storage works.

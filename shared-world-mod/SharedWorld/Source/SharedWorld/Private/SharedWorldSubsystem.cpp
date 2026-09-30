@@ -755,6 +755,28 @@ void USharedWorldSubsystem::RunInBackground(TFunction<TPair<bool, FString>()> Wo
 	});
 }
 
+void USharedWorldSubsystem::RefreshCloudCache(FSharedWorldRuntime& Runtime) const
+{
+	constexpr double MinRefreshSeconds = 2.0;
+	if (!Runtime.Leases || !Runtime.CloudCache || !Background)
+	{
+		return;
+	}
+	std::shared_ptr<FSharedWorldCloudCache> Cache = Runtime.CloudCache;
+	if (!Cache->TryBeginRefresh(FPlatformTime::Seconds(), MinRefreshSeconds))
+	{
+		return;
+	}
+	// Capture shared_ptrs only: the runtime may be destroyed before the read returns.
+	std::shared_ptr<sw::LeaseManager> Leases = Runtime.Leases;
+	Background->Post([Cache, Leases]()
+	{
+		auto Snap = Leases->Store().Load();
+		Cache->Set(Snap ? std::optional<sw::StateSnapshot>(*Snap) : std::nullopt);
+		Cache->EndRefresh();
+	});
+}
+
 sw::LocalVersions USharedWorldSubsystem::MyVersions() const
 {
 	sw::LocalVersions V;
@@ -1658,8 +1680,9 @@ namespace
 	/** True when cloud lease says the host is handing off / a successor is reserved. */
 	bool ObservePlannedHostLeave(FSharedWorldRuntime& Runtime, FString* OutSuccessorName = nullptr)
 	{
-		if (!Runtime.Leases) return false;
-		auto Snap = Runtime.Leases->Store().Load();
+		// Cached cloud state (refilled off-thread by RefreshCloudCache): this runs on
+		// the game thread every overlay update and must never do network I/O.
+		const std::optional<sw::StateSnapshot> Snap = Runtime.CloudCache ? Runtime.CloudCache->Get() : std::nullopt;
 		if (!Snap) return false;
 		const sw::WorldState& St = Snap->State;
 		if (St.PendingHandoff)
@@ -1798,7 +1821,7 @@ namespace
 			}
 			if (Runtime.Leases)
 			{
-				auto Snap = Runtime.Leases->Store().Load();
+				const std::optional<sw::StateSnapshot> Snap = Runtime.CloudCache ? Runtime.CloudCache->Get() : std::nullopt;
 				if (Snap && Snap->State.CurrentLease)
 				{
 					const sw::Lease& L = *Snap->State.CurrentLease;
@@ -1854,6 +1877,7 @@ void USharedWorldSubsystem::UpdateMigrationOverlay(const FString& WorldId)
 		HideMigrationOverlay();
 		return;
 	}
+	RefreshCloudCache(*Runtime);
 	const sw::SessionView View = Runtime->Session->View();
 	using S = sw::SessionState;
 
@@ -2040,6 +2064,7 @@ bool USharedWorldSubsystem::IsHostMigrationInFlight(const FString& WorldId) cons
 		return false;
 	}
 	using S = sw::SessionState;
+	RefreshCloudCache(*Runtime);
 	const sw::SessionView View = Runtime->Session->View();
 	switch (View.State)
 	{
@@ -2072,7 +2097,7 @@ bool USharedWorldSubsystem::IsHostMigrationInFlight(const FString& WorldId) cons
 		}
 		if (Runtime->Leases)
 		{
-			auto Snap = Runtime->Leases->Store().Load();
+			const std::optional<sw::StateSnapshot> Snap = Runtime->CloudCache ? Runtime->CloudCache->Get() : std::nullopt;
 			if (Snap)
 			{
 				if (Snap->State.PendingHandoff) return true;
@@ -2326,61 +2351,70 @@ void USharedWorldSubsystem::NotifyHostResponderCleared()
 	if (HostResponder) HostResponder->Clear();
 }
 
-FString USharedWorldSubsystem::DebugVerifyHost(const FString& InWorldId)
+void USharedWorldSubsystem::DebugVerifyHost(const FString& InWorldId, FDone OnDone)
 {
 	const FString WorldId = InWorldId.IsEmpty() ? ActiveWorldId : InWorldId;
 	FSharedWorldRuntime* Runtime = FindRuntime(WorldId);
 	if (!Runtime || !Runtime->Leases)
 	{
-		return TEXT("Unknown Shared World.");
-	}
-	auto Snap = Runtime->Leases->Store().Load();
-	if (!Snap)
-	{
-		return TEXT("Could not read Shared World cloud state.");
-	}
-	FString Out;
-	if (HostResponder && HostResponder->IsReadyHostFor(WorldId))
-	{
-		Out += HostResponder->Describe() + TEXT("\n");
-	}
-	if (!Snap->State.CurrentLease || !Runtime->Leases->LiveForObserver(Snap->State.CurrentLease, Runtime->Leases->Store().Clock().Now()))
-	{
-		Out += TEXT("Cloud lease: none (nobody hosting)\nVerification: n/a");
-		return Out;
-	}
-	const sw::Lease& L = *Snap->State.CurrentLease;
-	Out += FString::Printf(TEXT("Cloud host: %s\nLease generation: %lld\nHostReady: %s\nSession published: %s\n"),
-		*ToFString(L.Holder.DisplayName), L.Generation, L.bHostReady ? TEXT("yes") : TEXT("no"),
-		(L.Join && !L.Join->Data.empty()) ? TEXT("yes") : TEXT("no"));
-	if (!L.IsJoinable())
-	{
-		Out += TEXT("Verification: WAIT (host still starting)");
-		return Out;
+		OnDone(false, TEXT("Unknown Shared World."));
+		return;
 	}
 	EnsureSession(*Runtime);
-	auto Verifier = std::make_shared<SharedWorldUe::FSharedWorldUEHostVerifier>(
-		GetGameInstance(), HostResponder, NetworkQuality, ToFString(L.Holder.PlayerId));
-	sw::SharedWorldHello Hello = sw::MakeHello(MyIdentity(), Std(WorldId), L, Snap->State.HeadNumber(), "debug-verify", Runtime->Leases->Store().Clock().Now());
-	sw::JoinInfo Join = L.Join.value_or(sw::JoinInfo{});
-	const sw::HostVerifyResult VR = Verifier->Probe(Hello, Join, sw::Seconds(5));
-	sw::SharedWorldHelloAck Ack = VR.Ack.value_or(sw::SharedWorldHelloAck{});
-	if (Ack.HostPlayerId.empty()) Ack.HostPlayerId = L.Holder.PlayerId;
-	FString Verdict = UTF8_TO_TCHAR(sw::ToString(VR.Outcome));
-	if (VR.Outcome == sw::HostVerifyOutcome::Verified)
+	// The cloud read and the (blocking) probe run on the background queue. Local
+	// host state is captured here, on the game thread, because it lives in UObjects.
+	FString LocalHostDescription;
+	if (HostResponder && HostResponder->IsReadyHostFor(WorldId))
 	{
-		if (sw::Status V = sw::ValidateHelloAck(Hello, Ack, L, Snap->State.HeadNumber(), L.Join); !V)
-		{
-			Verdict = TEXT("FAIL (") + ToFString(V.Err().Message) + TEXT(")");
-		}
-		else
-		{
-			Verdict = TEXT("PASS");
-		}
+		LocalHostDescription = HostResponder->Describe() + TEXT("\n");
 	}
-	Out += FString::Printf(TEXT("Verification: %s\nRTT: %d ms\nDetail: %s"),
-		*Verdict, VR.RttMs, *ToFString(VR.Detail));
-	return Out;
+	std::shared_ptr<sw::LeaseManager> Leases = Runtime->Leases;
+	const sw::Identity Me = MyIdentity();
+	TWeakObjectPtr<UGameInstance> WeakGI(GetGameInstance());
+	TWeakObjectPtr<USharedWorldHostResponder> WeakResponder(HostResponder);
+	TWeakObjectPtr<USharedWorldNetworkQuality> WeakQuality(NetworkQuality);
+	RunInBackground([Leases, Me, WeakGI, WeakResponder, WeakQuality, WorldId, LocalHostDescription]() -> TPair<bool, FString>
+	{
+		auto Snap = Leases->Store().Load();
+		if (!Snap)
+		{
+			return {false, TEXT("Could not read Shared World cloud state.")};
+		}
+		FString Out = LocalHostDescription;
+		if (!Snap->State.CurrentLease || !Leases->LiveForObserver(Snap->State.CurrentLease, Leases->Store().Clock().Now()))
+		{
+			return {true, Out + TEXT("Cloud lease: none (nobody hosting)\nVerification: n/a")};
+		}
+		const sw::Lease& L = *Snap->State.CurrentLease;
+		Out += FString::Printf(TEXT("Cloud host: %s\nLease generation: %lld\nHostReady: %s\nSession published: %s\n"),
+			*ToFString(L.Holder.DisplayName), L.Generation, L.bHostReady ? TEXT("yes") : TEXT("no"),
+			(L.Join && !L.Join->Data.empty()) ? TEXT("yes") : TEXT("no"));
+		if (!L.IsJoinable())
+		{
+			return {true, Out + TEXT("Verification: WAIT (host still starting)")};
+		}
+		auto Verifier = std::make_shared<SharedWorldUe::FSharedWorldUEHostVerifier>(
+			WeakGI, WeakResponder, WeakQuality, ToFString(L.Holder.PlayerId));
+		sw::SharedWorldHello Hello = sw::MakeHello(Me, Std(WorldId), L, Snap->State.HeadNumber(), "debug-verify", Leases->Store().Clock().Now());
+		sw::JoinInfo Join = L.Join.value_or(sw::JoinInfo{});
+		const sw::HostVerifyResult VR = Verifier->Probe(Hello, Join, sw::Seconds(5));
+		sw::SharedWorldHelloAck Ack = VR.Ack.value_or(sw::SharedWorldHelloAck{});
+		if (Ack.HostPlayerId.empty()) Ack.HostPlayerId = L.Holder.PlayerId;
+		FString Verdict = UTF8_TO_TCHAR(sw::ToString(VR.Outcome));
+		if (VR.Outcome == sw::HostVerifyOutcome::Verified)
+		{
+			if (sw::Status V = sw::ValidateHelloAck(Hello, Ack, L, Snap->State.HeadNumber(), L.Join); !V)
+			{
+				Verdict = TEXT("FAIL (") + ToFString(V.Err().Message) + TEXT(")");
+			}
+			else
+			{
+				Verdict = TEXT("PASS");
+			}
+		}
+		return {true, Out + FString::Printf(TEXT("Verification: %s\nRTT: %d ms\nDetail: %s"), *Verdict, VR.RttMs, *ToFString(VR.Detail))};
+	},
+	[OnDone](USharedWorldSubsystem&, bool bOk, const FString& Message) { OnDone(bOk, Message); });
 }
 
 void USharedWorldSubsystem::FetchHistory(const FString& WorldId, int32 MaxCount, FDone OnDone)

@@ -16,12 +16,11 @@
 #include "GameFramework/PlayerState.h"
 #include "LocalUserInfo.h"
 #include "Misc/CoreMisc.h"
-#include "Online/FGSessionSettings.h"
 #include "OnlineIntegrationState.h"
 #include "OnlineIntegrationSubsystem.h"
 #include "SessionInformation.h"
 #include "SessionMigrationSequence.h"
-#include "Sessions/SessionDefinition.h"
+#include "SharedWorldGameShims.h"
 #include "SharedWorldSubsystem.h"
 #include "SharedWorldUeConvert.h"
 
@@ -34,96 +33,6 @@ namespace
 	/** Interval between checkpoint uploads while hosting. */
 	constexpr float CheckpointIntervalSeconds = 5.0f * 60.0f; // safer loss window than 15m; still waits for SaveGame completion
 
-	/**
-	 * LoadSaveFile hosts with whatever UFGSessionSettings currently has selected.
-	 * The front-end often leaves that on SessionDef_SinglePlayer (no ?listen), which
-	 * produces a single-player game. Prefer a session definition that creates an
-	 * online session so friends can join (SessionDef_Steam / EOS / IP, etc.).
-	 */
-	USessionDefinition* PickHostingSessionDefinition(UOnlineIntegrationState* State, UFGSessionSettings* Settings)
-	{
-		if (!State)
-		{
-			return nullptr;
-		}
-		if (Settings)
-		{
-			if (USessionDefinition* Current = Settings->GetCurrentSessionDefinition())
-			{
-				if (Current->bCreateOnlineSession)
-				{
-					return Current;
-				}
-			}
-		}
-		static const FName Preferred[] = {
-			FName(TEXT("SessionDef_Steam")),
-			FName(TEXT("SessionDef_EOS")),
-			FName(TEXT("SessionDef_Epic")),
-			FName(TEXT("SessionDef_EOSPlus")),
-			FName(TEXT("SessionDef_CrossPlay")),
-			FName(TEXT("SessionDef_Friends")),
-			FName(TEXT("SessionDef_Private")),
-			FName(TEXT("SessionDef_IP")),
-		};
-		for (const FName& Name : Preferred)
-		{
-			if (USessionDefinition* Def = State->GetSessionDefinitionByName(Name))
-			{
-				if (Def->bCreateOnlineSession)
-				{
-					return Def;
-				}
-			}
-		}
-		for (USessionDefinition* Def : State->GetSessionDefinitions())
-		{
-			if (Def && Def->bCreateOnlineSession)
-			{
-				return Def;
-			}
-		}
-		return nullptr;
-	}
-
-	bool EnsureHostingSessionDefinition(UWorld* MenuWorld)
-	{
-		UGameInstance* GI = MenuWorld ? MenuWorld->GetGameInstance() : nullptr;
-		UOnlineIntegrationSubsystem* Online = GI ? GI->GetSubsystem<UOnlineIntegrationSubsystem>() : nullptr;
-		UOnlineIntegrationState* State = Online ? Online->GetOnlineIntegrationState() : nullptr;
-		UFGSessionSettings* Settings = GI ? GI->GetSubsystem<UFGSessionSettings>() : nullptr;
-		USessionDefinition* Def = PickHostingSessionDefinition(State, Settings);
-		if (!Def || !Settings)
-		{
-			UE_LOG(LogSharedWorld, Error,
-				TEXT("[SharedWorld] event=host_session_def_missing reason=\"no multiplayer SessionDefinition available\""));
-			return false;
-		}
-		if (Settings->GetCurrentSessionDefinition() == Def)
-		{
-			UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_session_def name=%s already_current=1"), *Def->GetName());
-			return true;
-		}
-		// UFGSessionSettingsModel is not FACTORYGAME_API, so SetSessionDefinition/ApplySettingsModel
-		// cannot be linked from a mod. Write the transient current definition the same way the
-		// settings UI would after Apply.
-		FObjectProperty* CurrentProp = FindFProperty<FObjectProperty>(
-			UFGSessionSettings::StaticClass(), TEXT("mCurrentSessionDefinition"));
-		if (!CurrentProp)
-		{
-			UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_session_def_missing reason=\"mCurrentSessionDefinition not found\""));
-			return false;
-		}
-		CurrentProp->SetObjectPropertyValue(CurrentProp->ContainerPtrToValuePtr<void>(Settings), Def);
-		if (FNameProperty* NameProp = FindFProperty<FNameProperty>(
-				UFGSessionSettings::StaticClass(), TEXT("mSessionDefinitionName")))
-		{
-			NameProp->SetPropertyValue_InContainer(Settings, Def->GetFName());
-		}
-		const bool bOk = Settings->GetCurrentSessionDefinition() == Def;
-		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=host_session_def name=%s applied=%d"), *Def->GetName(), bOk ? 1 : 0);
-		return bOk;
-	}
 }
 
 void USharedWorldHostController::Init(USharedWorldSubsystem* InOwner)
@@ -169,6 +78,27 @@ bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSessio
 		return false;
 	}
 	const FString LoadName = FPaths::GetBaseFilename(SavePath);
+	// LoadSaveFile addresses saves by name, so the game picks the file. Make sure the
+	// file it would pick is the one we just verified and wrote; otherwise a stale
+	// SharedWorld_<id>.sav in another save folder could be hosted instead.
+	{
+		FString GameResolved;
+		if (UFGSaveSystem::GetAbsolutePathForSaveGame(MenuWorld, LoadName, GameResolved) && !GameResolved.IsEmpty())
+		{
+			if (!FPaths::IsSamePath(FPaths::ConvertRelativePathToFull(GameResolved), FPaths::ConvertRelativePathToFull(SavePath)))
+			{
+				UE_LOG(LogSharedWorld, Error,
+					TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"save path mismatch\" written=%s game_resolves=%s"),
+					*InWorldId, *SavePath, *GameResolved);
+				return false;
+			}
+		}
+		else
+		{
+			UE_LOG(LogSharedWorld, Warning,
+				TEXT("[SharedWorld] event=save_path_unverified world=%s written=%s note=\"game could not resolve the save by name\""), *InWorldId, *SavePath);
+		}
+	}
 	FSaveHeader Header;
 	if (!SaveSystem->LoadSaveGameHeaderSync(LoadName, Header))
 	{
@@ -176,9 +106,10 @@ bool USharedWorldHostController::BeginHosting(UWorld* MenuWorld, sw::WorldSessio
 		return false;
 	}
 	// Without this, LoadSaveFile travels with SessionDef_SinglePlayer (no listen).
-	if (!EnsureHostingSessionDefinition(MenuWorld))
+	FString SessionDefError;
+	if (!SharedWorldShim::EnsureHostingSessionDefinition(MenuWorld, &SessionDefError))
 	{
-		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"could not select a multiplayer session type\""), *InWorldId);
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=host_load_failed world=%s reason=\"could not select a multiplayer session type: %s\""), *InWorldId, *SessionDefError);
 		return false;
 	}
 	USessionMigrationSequence* Sequence = SaveSystem->LoadSaveFile(Header, FLoadSaveFileParameters(), PC);

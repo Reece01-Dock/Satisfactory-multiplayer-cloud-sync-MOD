@@ -1,3 +1,4 @@
+#include "SharedWorldCore/Util/RefreshCache.h"
 #include "SharedWorldCore/Util/Json.h"
 #include "SharedWorldCore/Util/Log.h"
 #include "SharedWorldCore/Util/Random.h"
@@ -133,4 +134,20 @@ SW_TEST(Util_MemoryLogSinkKeepsNewestLines)
 	sw::MemoryLogSink Unbounded;
 	for (int i = 0; i < 50; ++i) Unbounded.Write(sw::LogLevel::Info, "E", {});
 	EXPECT_EQ(Unbounded.Lines().size(), size_t(50));
+}
+
+SW_TEST(RefreshCache_OneRefreshInFlightAndRateLimited)
+{
+	RefreshCache<int> Cache;
+	EXPECT_TRUE(!Cache.Get().has_value());
+	EXPECT_TRUE(Cache.TryBeginRefresh(100.0, 2.0)); // first refresh always starts, whatever the clock base
+	EXPECT_TRUE(!Cache.TryBeginRefresh(105.0, 2.0)); // one in flight
+	Cache.Set(7);
+	Cache.EndRefresh();
+	EXPECT_EQ(*Cache.Get(), 7);
+	EXPECT_TRUE(!Cache.TryBeginRefresh(101.0, 2.0)); // too soon
+	EXPECT_TRUE(Cache.TryBeginRefresh(102.5, 2.0));
+	Cache.Set(std::nullopt); // a failed read clears the value rather than serving stale state
+	Cache.EndRefresh();
+	EXPECT_TRUE(!Cache.Get().has_value());
 }
