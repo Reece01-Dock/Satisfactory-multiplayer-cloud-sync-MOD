@@ -36,11 +36,24 @@ is still outstanding — see `STATUS.md`.
 ### Upload a new version to ficsit.app
 
 1. Package `SharedWorld` with Alpakit (Shipping, Windows).
-2. From the repo root: `powershell -File tools/package-smr.ps1`  
-   (bumps patch `1.0.0` → `1.0.1`, builds multi-target zip)
+2. Version bump + SMR zip happen automatically if you set Alpakit’s
+   **After Package** command to:
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass -File "E:\Documents\Satisfactory-multiplayer-cloud-sync-MOD\tools\after-alpakit-sharedworld.ps1"
+```
+
+   Or run manually from the repo:
+
+```powershell
+powershell -NoProfile -File tools\after-alpakit-sharedworld.ps1
+```
+
 3. Upload **`Desktop\SharedWorlds.zip`** — not `SharedWorld-Windows.zip`.
 
-Use `-Minor` / `-Major` / `-Set 1.2.3` on that script to bump differently, or `-NoBump` to keep the current version.
+Each run bumps the patch (`1.0.0` → `1.0.1`). Use
+`after-alpakit-sharedworld.ps1 -Bump Minor` (or `Major`) for larger bumps,
+or `tools\package-smr.ps1 -NoBump` to rebuild the zip without changing the version.
 
 The original project is by Vojtak42; this repository is licensed under the
 terms in `LICENSE`.

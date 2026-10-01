@@ -1,10 +1,12 @@
 # Bump SharedWorld.uplugin SemVersion (and matching Version / VersionName / RemoteVersionRange).
+# Only touches TOP-LEVEL fields (never Plugins[].SemVersion).
+#
 # Usage:
 #   .\tools\bump-version.ps1              # 1.0.0 -> 1.0.1 (patch)
 #   .\tools\bump-version.ps1 -Minor       # 1.0.1 -> 1.1.0
 #   .\tools\bump-version.ps1 -Major       # 1.1.0 -> 2.0.0
 #   .\tools\bump-version.ps1 -Set 1.2.3
-#   .\tools\bump-version.ps1 -NoSync      # don't copy into SML Mods
+#   .\tools\bump-version.ps1 -NoSync
 
 param(
 	[switch]$Major,
@@ -20,56 +22,82 @@ $SmlUplugin = 'E:\SatisfactoryModding\SatisfactoryModLoader\Mods\SharedWorld\Sha
 
 if (-not (Test-Path $Uplugin)) { throw "Missing $Uplugin" }
 
-$raw = Get-Content $Uplugin -Raw
-if ($raw -notmatch '"SemVersion"\s*:\s*"([^"]+)"') {
-	throw "Could not find SemVersion in $Uplugin"
+$raw = Get-Content -LiteralPath $Uplugin -Raw
+
+# Prefer top-level SemVersion (line that is only that field, not Plugins entries).
+if ($raw -notmatch '(?m)^\s*"SemVersion"\s*:\s*"([^"]+)"\s*,?\s*$') {
+	throw "Could not find top-level SemVersion in $Uplugin"
 }
 $old = $Matches[1]
 
 if ($Set) {
-	$new = $Set
+	$new = $Set.Trim()
 } else {
-	$parts = $old.Split('-')[0].Split('.')
+	$core = ($old -split '-', 2)[0]
+	$parts = @($core -split '\.')
 	while ($parts.Count -lt 3) { $parts += '0' }
-	[int]$maj = $parts[0]; [int]$min = $parts[1]; [int]$pat = $parts[2]
+	[int]$maj = $parts[0]
+	[int]$min = $parts[1]
+	[int]$pat = $parts[2]
 	if ($Major) { $maj++; $min = 0; $pat = 0 }
 	elseif ($Minor) { $min++; $pat = 0 }
 	else { $pat++ }
 	$new = "$maj.$min.$pat"
 }
 
-if ($new -notmatch '^\d+\.\d+\.\d+') {
-	throw "Invalid semver '$new' (expected Major.Minor.Patch)"
+if ($new -notmatch '^\d+\.\d+\.\d+(\-[0-9A-Za-z\.-]+)?$') {
+	throw "Invalid semver '$new'"
 }
-$majorInt = [int]($new.Split('.')[0])
-$nextMajor = $majorInt + 1
-$remoteRange = ">=$new <$nextMajor.0.0"
 
-function Set-JsonField([string]$Text, [string]$Name, [string]$Value, [switch]$Number) {
-	$pattern = if ($Number) {
-		'("' + [regex]::Escape($Name) + '"\s*:\s*)\d+'
+$majorInt = [int](($new -split '\.')[0])
+$remoteRange = ">=$new <$($majorInt + 1).0.0"
+
+function Set-TopLevelField([string]$Text, [string]$Name, [string]$Value, [switch]$AsNumber) {
+	# Top-level only: field alone on its line (Plugins SemVersion sits mid-line).
+	if ($AsNumber) {
+		$pattern = '(?m)^(\s*"' + [regex]::Escape($Name) + '"\s*:\s*)\d+(\s*,?\s*)$'
+		$replacement = '${1}' + $Value + '${2}'
 	} else {
-		'("' + [regex]::Escape($Name) + '"\s*:\s*")[^"]*(")'
+		$pattern = '(?m)^(\s*"' + [regex]::Escape($Name) + '"\s*:\s*")[^"]*("\s*,?\s*)$'
+		$replacement = '${1}' + $Value.Replace('${', '$${') + '${2}'
 	}
-	$replacement = if ($Number) { "`${1}$Value" } else { "`${1}$Value`${2}" }
+
+	# String overload with count=1 (NOT RegexOptions).
 	$updated = [regex]::Replace($Text, $pattern, $replacement, 1)
-	if ($updated -eq $Text) { throw "Failed to update field $Name" }
+	if ($updated -eq $Text) {
+		# Already correct?
+		if ($AsNumber) {
+			if ($Text -match ('(?m)^\s*"' + [regex]::Escape($Name) + '"\s*:\s*' + [regex]::Escape($Value) + '\b')) {
+				return $Text
+			}
+		} elseif ($Text -match ('(?m)^\s*"' + [regex]::Escape($Name) + '"\s*:\s*"' + [regex]::Escape($Value) + '"')) {
+			return $Text
+		}
+		throw "Failed to update top-level field $Name"
+	}
 	return $updated
 }
 
-$raw = Set-JsonField $raw 'Version' "$majorInt" -Number
-$raw = Set-JsonField $raw 'VersionName' $new
-$raw = Set-JsonField $raw 'SemVersion' $new
-$raw = Set-JsonField $raw 'RemoteVersionRange' $remoteRange
+$raw = Set-TopLevelField $raw 'Version' "$majorInt" -AsNumber
+$raw = Set-TopLevelField $raw 'VersionName' $new
+$raw = Set-TopLevelField $raw 'SemVersion' $new
+$raw = Set-TopLevelField $raw 'RemoteVersionRange' $remoteRange
 
-[System.IO.File]::WriteAllText($Uplugin, $raw.TrimEnd() + "`n")
+# Restore SML dependency if a previous buggy bump overwrote it.
+$raw = [regex]::Replace(
+	$raw,
+	'(?m)(\{\s*"Name"\s*:\s*"SML"\s*,\s*"Enabled"\s*:\s*true\s*,\s*"SemVersion"\s*:\s*")[^"]*(")',
+	'${1}^3.12.0${2}',
+	1
+)
+
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($Uplugin, $raw.TrimEnd() + "`n", $utf8NoBom)
 Write-Host "Version $old -> $new (Version=$majorInt, RemoteVersionRange=$remoteRange)"
 
 if (-not $NoSync -and (Test-Path (Split-Path $SmlUplugin -Parent))) {
-	Copy-Item $Uplugin $SmlUplugin -Force
+	Copy-Item -LiteralPath $Uplugin -Destination $SmlUplugin -Force
 	Write-Host "Synced to SML Mods: $SmlUplugin"
 }
 
-# Expose for callers
-$script:BumpedVersion = $new
-return $new
+Write-Output $new
