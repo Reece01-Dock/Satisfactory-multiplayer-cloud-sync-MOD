@@ -50,6 +50,7 @@
 #include "TimerManager.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "UI/FGUserWidget.h"
+#include "UI/SharedWorldFgWidgets.h"
 #include "UI/SharedWorldGameInstanceModule.h"
 #include "UI/SharedWorldMigrationOverlay.h"
 #include "UI/SharedWorldSessionWidget.h"
@@ -390,6 +391,8 @@ sw::ProviderEnvironment USharedWorldSubsystem::MakeEnvironment() const
 	sw::ProviderEnvironment Env;
 	Env.Http = Http;
 	Env.Credentials = Credentials;
+	Env.GitHubOAuthClientId = Std(ResolveGitHubClientId());
+	Env.Clock = &AuthClock;
 	return Env;
 }
 
@@ -1224,9 +1227,9 @@ void USharedWorldSubsystem::BeginGitHubSignIn()
 			case sw::DevicePoll::Authorized:
 				break;
 			}
-			std::string Token = std::move(Poll->AccessToken);
-			Poll->AccessToken.clear();
-			if (sw::Status Fin = Auth->FinalizeAuthorized(std::move(Token)); !Fin)
+			sw::GitHubOAuthTokens Tokens = std::move(Poll->Tokens);
+			Poll->Tokens = {};
+			if (sw::Status Fin = Auth->FinalizeAuthorized(std::move(Tokens)); !Fin)
 			{
 				PushUi();
 				return;
@@ -1565,6 +1568,11 @@ void USharedWorldSubsystem::HandleSessionTransition(FSharedWorldRuntime& Runtime
 		LastSequences.Add(WorldId, View.Sequence);
 		OnChanged.Broadcast(); // the panel follows every step, not just the 5 s cloud refresh
 	}
+	if (View.PlayerNotice && !View.PlayerNotice->empty())
+	{
+		QueuePlayerNotice(FText::FromString(ToFString(*View.PlayerNotice)));
+		Runtime.Session->AcknowledgeNotice();
+	}
 
 	if (View.State == S::ReadyToHost && Host->GetWorldId() == WorldId && Host->LoadTimedOut())
 	{
@@ -1600,6 +1608,7 @@ void USharedWorldSubsystem::HandleSessionTransition(FSharedWorldRuntime& Runtime
 		if (Host->IsHostingWorld(WorldId))
 		{
 			Runtime.Session->SetPlayers(Host->GetConnectedPlayers());
+			FlushPendingPlayerNotice();
 		}
 		else if (Host->GetWorldId() == WorldId)
 		{
@@ -1658,6 +1667,14 @@ void USharedWorldSubsystem::HandleSessionTransition(FSharedWorldRuntime& Runtime
 	if (Prev != StateStr)
 	{
 		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=session_state world=%s from=%s to=%s"), *WorldId, *Prev, *StateStr);
+		if (View.State == S::Error && View.Error)
+		{
+			const FString Msg = ToFString(View.Error->Message.empty() ? View.Error->Detail : View.Error->Message);
+			if (!Msg.IsEmpty())
+			{
+				ShowPlayerError(FText::FromString(Msg));
+			}
+		}
 	}
 }
 
@@ -2206,9 +2223,60 @@ void USharedWorldSubsystem::ReturnToMainMenu(const FText& Reason)
 	}
 	bReturningToMenu = true;
 	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=return_to_menu reason=\"%s\""), *Reason.ToString());
+	if (!Reason.IsEmpty())
+	{
+		ShowPlayerError(Reason);
+	}
 	// UNVERIFIED (STATUS.md): engine API; Satisfactory's main-menu travel
 	// after this call has to be confirmed in game.
 	PC->ClientReturnToMainMenuWithTextReason(Reason);
+}
+
+void USharedWorldSubsystem::ShowPlayerError(const FText& Message)
+{
+	const FString Key = Message.ToString();
+	if (Key.IsEmpty()) return;
+	if (LastShownErrorMessage == Key && ActiveErrorPopup.IsValid()) return;
+	LastShownErrorMessage = Key;
+	if (UUserWidget* Existing = ActiveErrorPopup.Get())
+	{
+		Existing->RemoveFromParent();
+		ActiveErrorPopup.Reset();
+	}
+	UUserWidget* Popup = SharedWorldFg::ShowErrorMessage(
+		this,
+		Message,
+		NSLOCTEXT("SharedWorld", "ErrorOk", "OK"),
+		this,
+		GET_FUNCTION_NAME_CHECKED(USharedWorldSubsystem, DismissPlayerError));
+	ActiveErrorPopup = Popup;
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=player_notice_show ok=%d"), Popup ? 1 : 0);
+}
+
+void USharedWorldSubsystem::QueuePlayerNotice(const FText& Message)
+{
+	const FString Key = Message.ToString();
+	if (Key.IsEmpty()) return;
+	PendingPlayerNotice = Key;
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=player_notice_queued chars=%d"), Key.Len());
+}
+
+void USharedWorldSubsystem::FlushPendingPlayerNotice()
+{
+	if (PendingPlayerNotice.IsEmpty()) return;
+	const FText Msg = FText::FromString(PendingPlayerNotice);
+	PendingPlayerNotice.Reset();
+	ShowPlayerError(Msg);
+}
+
+void USharedWorldSubsystem::DismissPlayerError()
+{
+	if (UUserWidget* Popup = ActiveErrorPopup.Get())
+	{
+		Popup->RemoveFromParent();
+	}
+	ActiveErrorPopup.Reset();
+	LastShownErrorMessage.Reset();
 }
 
 void USharedWorldSubsystem::OnGameWorldReady(UWorld* World)
@@ -2235,6 +2303,8 @@ void USharedWorldSubsystem::OnGameWorldReady(UWorld* World)
 	{
 		Host->OnGameWorldReady(World);
 	}
+	// Version-bump notices are queued during CHECKING; show after travel so they aren't wiped.
+	FlushPendingPlayerNotice();
 }
 
 void USharedWorldSubsystem::OnWorldBeginTearDown(UWorld* World)
@@ -2623,17 +2693,20 @@ void USharedWorldSubsystem::GrantHosting(const FString& WorldId, const FString& 
 	Cfg.Owner = Runtime->Entry.Provider.Owner;
 	Cfg.Repo = Runtime->Entry.Provider.Repo;
 	Cfg.WorldId = Runtime->Entry.WorldId;
-	std::shared_ptr<sw::ICredentialStore> Creds = Credentials;
-	Cfg.Token = [Creds]() -> sw::Result<std::string>
-	{
-		auto T = Creds->Read(sw::GitHubCredentialKey);
-		if (!T && T.Is(sw::ErrorCode::NotFound))
-		{
-			return sw::MakeError(sw::ErrorCode::Unauthorized, "sign in to GitHub first");
-		}
-		return T;
-	};
 	std::shared_ptr<sw::IHttpClient> HttpRef = Http;
+	std::shared_ptr<sw::ICredentialStore> Creds = Credentials;
+	const std::string ClientId = Std(ResolveGitHubClientId());
+	const sw::IClock* ClockPtr = &AuthClock;
+	Cfg.Token = [HttpRef, Creds, ClientId, ClockPtr]() -> sw::Result<std::string>
+	{
+		return sw::ResolveGitHubAccessToken(HttpRef, Creds, *ClockPtr, ClientId, sw::GitHubCredentialKey, false);
+	};
+	Cfg.RefreshOnUnauthorized = [HttpRef, Creds, ClientId, ClockPtr]() -> sw::Status
+	{
+		auto T = sw::ResolveGitHubAccessToken(HttpRef, Creds, *ClockPtr, ClientId, sw::GitHubCredentialKey, true);
+		if (!T) return T.Err();
+		return {};
+	};
 	const std::string Login = Std(GitHubUsername.TrimStartAndEnd());
 	RunInBackground([HttpRef, Cfg, Login]() -> TPair<bool, FString>
 	{

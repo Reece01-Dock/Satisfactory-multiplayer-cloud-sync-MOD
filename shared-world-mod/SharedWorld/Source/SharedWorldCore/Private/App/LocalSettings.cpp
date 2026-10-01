@@ -304,13 +304,26 @@ namespace sw
 			C.WorldId = Entry.WorldId;
 			C.ApiBase = Env.GitHubApiBase;
 			C.UploadBase = Env.GitHubUploadBase;
-			// Read on every request so signing out takes effect immediately.
+			// Resolve (and refresh when needed) on every request so signing out
+			// takes effect immediately and expiring OAuth tokens stay usable.
+			std::shared_ptr<IHttpClient> Http = Env.Http;
 			std::shared_ptr<ICredentialStore> Creds = Env.Credentials;
-			C.Token = [Creds]() -> Result<std::string>
+			const std::string ClientId = Env.GitHubOAuthClientId;
+			const std::string WebBase = Env.GitHubWebBase.empty() ? std::string("https://github.com") : Env.GitHubWebBase;
+			const IClock* ClockPtr = Env.Clock;
+			C.Token = [Http, Creds, ClientId, WebBase, ClockPtr]() -> Result<std::string>
 			{
-				auto T = Creds->Read(GitHubCredentialKey);
-				if (!T && T.Is(ErrorCode::NotFound)) return MakeError(ErrorCode::Unauthorized, "no GitHub account connected");
-				return T;
+				SystemClock Fallback;
+				const IClock& Clock = ClockPtr ? *ClockPtr : static_cast<const IClock&>(Fallback);
+				return ResolveGitHubAccessToken(Http, Creds, Clock, ClientId, GitHubCredentialKey, false, Logger{}, WebBase);
+			};
+			C.RefreshOnUnauthorized = [Http, Creds, ClientId, WebBase, ClockPtr]() -> Status
+			{
+				SystemClock Fallback;
+				const IClock& Clock = ClockPtr ? *ClockPtr : static_cast<const IClock&>(Fallback);
+				auto T = ResolveGitHubAccessToken(Http, Creds, Clock, ClientId, GitHubCredentialKey, true, Logger{}, WebBase);
+				if (!T) return T.Err();
+				return {};
 			};
 			Out.Repository = std::make_shared<GitHubRepository>(Env.Http, C);
 			auto RawObjects = std::make_shared<GitHubReleaseObjectStore>(Env.Http, C);

@@ -120,49 +120,66 @@ namespace sw
 		SW_TRY(Cfg.Validate());
 		std::string Tok;
 		SW_ASSIGN(Tok, Cfg.Token());
-		bool bHasAccept = false;
-		bool bHasContentType = false;
-		for (const auto& [K, V] : Req.Headers)
+		bool bRetriedAuth = false;
+		for (;;)
 		{
-			bHasAccept |= K == "Accept";
-			bHasContentType |= K == "Content-Type";
-		}
-		// UE CurlHttp asserts when a request has a body and no Content-Type header.
-		if (!bHasContentType && (!Req.Body.empty() || !Req.BodyFile.empty()))
-		{
-			Req.Headers.push_back({"Content-Type", "application/json"});
-		}
-		if (!bHasAccept) Req.Headers.push_back({"Accept", "application/vnd.github+json"});
-		Req.Headers.push_back({"Authorization", "Bearer " + Tok});
-		Req.Headers.push_back({"X-GitHub-Api-Version", "2022-11-28"});
-		Req.Headers.push_back({"User-Agent", Cfg.UserAgent});
-		HttpResponse R;
-		SW_ASSIGN(R, Http->Send(Req));
-		if (std::find(OkStatuses.begin(), OkStatuses.end(), R.Status) != OkStatuses.end()) return R;
-		const std::string Msg = Excerpt(R.Body);
-		const std::string Where = Req.Method + " " + Req.Url.substr(Cfg.ApiBase.size() < Req.Url.size() ? 0 : 0, 120);
-		switch (R.Status)
-		{
-		case 401:
-			return MakeError(ErrorCode::Unauthorized, "GitHub rejected the credentials");
-		case 403:
-		case 429:
-			if (R.Status == 429 || R.Header("x-ratelimit-remaining") == "0" || !R.Header("retry-after").empty() || Msg.find("rate limit") != std::string::npos)
+			HttpRequest Attempt = Req;
+			bool bHasAccept = false;
+			bool bHasContentType = false;
+			bool bHasAuth = false;
+			for (const auto& [K, V] : Attempt.Headers)
 			{
-				const std::string After = R.Header("retry-after");
-				return MakeError(ErrorCode::RateLimited, "GitHub rate limit reached" + (After.empty() ? std::string() : ", retry after " + After + " s"));
+				bHasAccept |= K == "Accept";
+				bHasContentType |= K == "Content-Type";
+				bHasAuth |= K == "Authorization";
 			}
-			return MakeError(ErrorCode::Unauthorized, "no access to the GitHub repository: " + Msg);
-		case 404:
-			return MakeError(ErrorCode::NotFound, "not found: " + Msg);
-		case 409:
-			if (Msg.find("empty") != std::string::npos) return MakeError(ErrorCode::BadState, "GitHub repository is empty");
-			return MakeError(ErrorCode::Conflict, "GitHub conflict: " + Msg);
-		case 422:
-			return MakeError(ErrorCode::Conflict, "GitHub rejected the update: " + Msg);
-		default:
-			if (R.Status >= 500) return MakeError(ErrorCode::Network, "GitHub server error " + std::to_string(R.Status));
-			return MakeError(ErrorCode::Invalid, "unexpected GitHub response " + std::to_string(R.Status) + " for " + Where + ": " + Msg);
+			// UE CurlHttp asserts when a request has a body and no Content-Type header.
+			if (!bHasContentType && (!Attempt.Body.empty() || !Attempt.BodyFile.empty()))
+			{
+				Attempt.Headers.push_back({"Content-Type", "application/json"});
+			}
+			if (!bHasAccept) Attempt.Headers.push_back({"Accept", "application/vnd.github+json"});
+			if (!bHasAuth) Attempt.Headers.push_back({"Authorization", "Bearer " + Tok});
+			Attempt.Headers.push_back({"X-GitHub-Api-Version", "2022-11-28"});
+			Attempt.Headers.push_back({"User-Agent", Cfg.UserAgent});
+			HttpResponse R;
+			SW_ASSIGN(R, Http->Send(Attempt));
+			if (std::find(OkStatuses.begin(), OkStatuses.end(), R.Status) != OkStatuses.end()) return R;
+			const std::string Msg = Excerpt(R.Body);
+			const std::string Where = Attempt.Method + " " + Attempt.Url.substr(Cfg.ApiBase.size() < Attempt.Url.size() ? 0 : 0, 120);
+			if (R.Status == 401 && !bRetriedAuth && Cfg.RefreshOnUnauthorized)
+			{
+				bRetriedAuth = true;
+				if (Status Ref = Cfg.RefreshOnUnauthorized(); Ref)
+				{
+					SW_ASSIGN(Tok, Cfg.Token());
+					continue;
+				}
+			}
+			switch (R.Status)
+			{
+			case 401:
+				return MakeError(ErrorCode::Unauthorized, "GitHub rejected the credentials");
+			case 403:
+			case 429:
+				if (R.Status == 429 || R.Header("x-ratelimit-remaining") == "0" || !R.Header("retry-after").empty() || Msg.find("rate limit") != std::string::npos)
+				{
+					const std::string After = R.Header("retry-after");
+					return MakeError(ErrorCode::RateLimited, "GitHub rate limit reached" + (After.empty() ? std::string() : ", retry after " + After + " s"));
+				}
+				// Permission / scope / SSO issues — not proof the OAuth credential is invalid.
+				return MakeError(ErrorCode::BadState, "no access to the GitHub repository: " + Msg);
+			case 404:
+				return MakeError(ErrorCode::NotFound, "not found: " + Msg);
+			case 409:
+				if (Msg.find("empty") != std::string::npos) return MakeError(ErrorCode::BadState, "GitHub repository is empty");
+				return MakeError(ErrorCode::Conflict, "GitHub conflict: " + Msg);
+			case 422:
+				return MakeError(ErrorCode::Conflict, "GitHub rejected the update: " + Msg);
+			default:
+				if (R.Status >= 500) return MakeError(ErrorCode::Network, "GitHub server error " + std::to_string(R.Status));
+				return MakeError(ErrorCode::Invalid, "unexpected GitHub response " + std::to_string(R.Status) + " for " + Where + ": " + Msg);
+			}
 		}
 	}
 

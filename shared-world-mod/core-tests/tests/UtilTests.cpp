@@ -151,3 +151,31 @@ SW_TEST(RefreshCache_OneRefreshInFlightAndRateLimited)
 	Cache.EndRefresh();
 	EXPECT_TRUE(!Cache.Get().has_value());
 }
+
+#include "SharedWorldCore/World/Compatibility.h"
+
+SW_TEST(Compatibility_NewerModCanOpenOlderWorld)
+{
+	LocalVersions Local;
+	Local.ModVersion = "1.0.1";
+	Local.GameBuild = "491125";
+	WorldInfo Info;
+	Info.ModVersion = "0.1.0";
+	ASSERT_OK(CheckCompatibility(Local, Info, std::nullopt));
+
+	Local.ModVersion = "0.2.0";
+	Info.ModVersion = "0.1.0";
+	ASSERT_OK(CheckCompatibility(Local, Info, std::nullopt));
+
+	Local.ModVersion = "1.0.0";
+	Info.ModVersion = "2.0.0";
+	EXPECT_ERR(CheckCompatibility(Local, Info, std::nullopt), ErrorCode::Unsupported);
+
+	Local.ModVersion = "0.1.0";
+	Info.ModVersion = "0.2.0";
+	EXPECT_ERR(CheckCompatibility(Local, Info, std::nullopt), ErrorCode::Unsupported);
+
+	Local.ModVersion = "1.0.2";
+	Info.ModVersion = "1.0.2";
+	ASSERT_OK(CheckCompatibility(Local, Info, std::nullopt));
+}

@@ -200,6 +200,7 @@ namespace sw
 		{
 			Current.TheDecision = Decision::None;
 			Current.Error.reset();
+			Current.PlayerNotice.reset();
 			Current.Join.reset();
 			Current.HostName.clear();
 			Current.SavePath.clear();
@@ -333,6 +334,14 @@ namespace sw
 		}
 	}
 
+	void WorldSession::AcknowledgeNotice()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (!Current.PlayerNotice) return;
+		Current.PlayerNotice.reset();
+		++Current.Sequence;
+	}
+
 	void WorldSession::Restore(int64_t FromRevision)
 	{
 		{
@@ -389,6 +398,46 @@ namespace sw
 			{
 				FailFrom(C.Err(), "INCOMPATIBLE", C.Err().Message, false);
 				return;
+			}
+			// Host/client on a newer mod stamps world.json so friends must update too.
+			if (!Cfg.Versions.ModVersion.empty() && !Info->ModVersion.empty()
+				&& CompareVersions(Cfg.Versions.ModVersion, Info->ModVersion) > 0)
+			{
+				WorldInfo Bumped = *Info;
+				Bumped.ModVersion = Cfg.Versions.ModVersion;
+				if (!Cfg.Versions.GameBuild.empty()) Bumped.GameBuild = Cfg.Versions.GameBuild;
+				const std::string FromVer = Info->ModVersion;
+				const std::string ToVer = Cfg.Versions.ModVersion;
+				Lock.unlock();
+				auto Written = Leases->Store().UpdateDocument(Paths::WorldInfo,
+					[Bumped](const std::string&) -> Result<std::string>
+					{
+						return json::Serialize(Bumped.ToJson(), 2);
+					},
+					"require Shared World mod " + ToVer);
+				Lock.lock();
+				if (Written)
+				{
+					const std::string Notice =
+						"This Shared World now requires Shared World mod " + ToVer
+						+ ".\n\nFriends must update to the same version before they can join.";
+					Current.PlayerNotice = Notice;
+					Note(Notice);
+					Leases->Store().Log().Info("WorldModVersionBumped", {
+						{"world", Current.WorldId},
+						{"from", FromVer},
+						{"to", ToVer},
+					});
+				}
+				else
+				{
+					Leases->Store().Log().Warn("WorldModVersionBumpFailed", {
+						{"world", Current.WorldId},
+						{"from", FromVer},
+						{"to", ToVer},
+						{"reason", Written.Err().Describe()},
+					});
+				}
 			}
 		}
 		const WorldState& St = Snap->State;

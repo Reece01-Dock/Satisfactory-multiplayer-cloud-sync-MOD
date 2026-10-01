@@ -28,6 +28,8 @@ namespace sw
 
 	namespace
 	{
+		constexpr TimeMs AccessTokenRefreshSkew = Minutes(5);
+
 		std::string FormEncode(const std::string& S)
 		{
 			static const char* Hex = "0123456789ABCDEF";
@@ -69,6 +71,162 @@ namespace sw
 			}
 			return U;
 		}
+
+		bool LooksLikeBareToken(const std::string& Blob)
+		{
+			if (Blob.empty() || Blob[0] == '{') return false;
+			return true;
+		}
+
+		Result<GitHubOAuthTokens> ParseTokenResponse(const json::Value& V, const IClock& Clock)
+		{
+			GitHubOAuthTokens Out;
+			SW_ASSIGN(Out.AccessToken, json::GetString(V, "access_token", 512));
+			if (auto Rt = json::GetOptionalString(V, "refresh_token", 512); Rt.Ok() && Rt->has_value()) Out.RefreshToken = **Rt;
+			if (auto Sc = json::GetOptionalString(V, "scope", 256); Sc.Ok() && Sc->has_value()) Out.Scope = **Sc;
+			const TimeMs Now = Clock.Now();
+			if (auto Exp = json::GetOptionalInt(V, "expires_in"); Exp.Ok() && Exp->has_value() && **Exp > 0)
+			{
+				Out.AccessExpiresAt = Now + Seconds(**Exp);
+			}
+			if (auto RExp = json::GetOptionalInt(V, "refresh_token_expires_in"); RExp.Ok() && RExp->has_value() && **RExp > 0)
+			{
+				Out.RefreshExpiresAt = Now + Seconds(**RExp);
+			}
+			return Out;
+		}
+
+		bool AccessTokenNeedsRefresh(const GitHubOAuthTokens& Tokens, TimeMs Now)
+		{
+			if (Tokens.AccessToken.empty()) return true;
+			if (Tokens.AccessExpiresAt <= 0) return false; // non-expiring / unknown
+			return Now + AccessTokenRefreshSkew >= Tokens.AccessExpiresAt;
+		}
+
+		bool RefreshPossible(const GitHubOAuthTokens& Tokens, TimeMs Now)
+		{
+			if (Tokens.RefreshToken.empty()) return false;
+			if (Tokens.RefreshExpiresAt > 0 && Now >= Tokens.RefreshExpiresAt) return false;
+			return true;
+		}
+
+		std::mutex& RefreshMutexFor(const std::string& CredentialKey)
+		{
+			// One process-wide mutex is enough: GitHub linking is single-account.
+			(void)CredentialKey;
+			static std::mutex M;
+			return M;
+		}
+
+		bool IsRateLimitedResponse(int Status, const HttpResponse& R, const std::string& Msg)
+		{
+			return Status == 429
+				|| R.Header("x-ratelimit-remaining") == "0"
+				|| !R.Header("retry-after").empty()
+				|| Msg.find("rate limit") != std::string::npos;
+		}
+	}
+
+	Result<GitHubOAuthTokens> ParseGitHubCredentialBlob(const std::string& Blob)
+	{
+		if (Blob.empty()) return MakeError(ErrorCode::Unauthorized, "empty GitHub credential");
+		if (LooksLikeBareToken(Blob))
+		{
+			GitHubOAuthTokens T;
+			T.AccessToken = Blob;
+			return T;
+		}
+		auto Parsed = json::Parse(Blob);
+		if (!Parsed) return MakeError(ErrorCode::Corrupt, "malformed GitHub credential blob");
+		const json::Value& V = *Parsed;
+		GitHubOAuthTokens Out;
+		SW_ASSIGN(Out.AccessToken, json::GetString(V, "access_token", 512));
+		if (auto Rt = json::GetOptionalString(V, "refresh_token", 512); Rt.Ok() && Rt->has_value()) Out.RefreshToken = **Rt;
+		if (auto Sc = json::GetOptionalString(V, "scope", 256); Sc.Ok() && Sc->has_value()) Out.Scope = **Sc;
+		if (auto Exp = json::GetOptionalInt(V, "expires_at"); Exp.Ok() && Exp->has_value()) Out.AccessExpiresAt = **Exp;
+		if (auto RExp = json::GetOptionalInt(V, "refresh_expires_at"); RExp.Ok() && RExp->has_value()) Out.RefreshExpiresAt = **RExp;
+		return Out;
+	}
+
+	std::string SerializeGitHubCredentialBlob(const GitHubOAuthTokens& Tokens)
+	{
+		json::Value V;
+		V.Set("v", 1);
+		V.Set("access_token", Tokens.AccessToken);
+		if (!Tokens.RefreshToken.empty()) V.Set("refresh_token", Tokens.RefreshToken);
+		if (Tokens.AccessExpiresAt > 0) V.Set("expires_at", Tokens.AccessExpiresAt);
+		if (Tokens.RefreshExpiresAt > 0) V.Set("refresh_expires_at", Tokens.RefreshExpiresAt);
+		if (!Tokens.Scope.empty()) V.Set("scope", Tokens.Scope);
+		return json::Serialize(V);
+	}
+
+	GitHubAuthDiagnostics MakeGitHubAuthDiagnostics(const GitHubOAuthTokens& Tokens, TimeMs Now, bool bSessionConnected)
+	{
+		GitHubAuthDiagnostics D;
+		D.bAccessTokenPresent = !Tokens.AccessToken.empty();
+		D.bRefreshTokenPresent = !Tokens.RefreshToken.empty();
+		D.bAccessTokenExpired = Tokens.AccessExpiresAt > 0 && Now >= Tokens.AccessExpiresAt;
+		D.bRefreshPossible = RefreshPossible(Tokens, Now);
+		D.bAuthenticated = bSessionConnected && D.bAccessTokenPresent && (!D.bAccessTokenExpired || D.bRefreshPossible);
+		if (Tokens.AccessExpiresAt > 0)
+		{
+			const int64_t Ms = Tokens.AccessExpiresAt - Now;
+			D.ExpiresInSeconds = Ms <= 0 ? 0 : Ms / 1000;
+		}
+		return D;
+	}
+
+	Result<std::string> ResolveGitHubAccessToken(std::shared_ptr<IHttpClient> Http, std::shared_ptr<ICredentialStore> Store,
+		const IClock& Clock, const std::string& ClientId, const std::string& CredentialKey, bool bForceRefresh, Logger Log, std::string WebBase)
+	{
+		if (!Http || !Store) return MakeError(ErrorCode::Invalid, "GitHub credential resolver misconfigured");
+		std::lock_guard<std::mutex> RefreshLock(RefreshMutexFor(CredentialKey));
+
+		auto Blob = Store->Read(CredentialKey);
+		if (!Blob)
+		{
+			if (Blob.Is(ErrorCode::NotFound)) return MakeError(ErrorCode::Unauthorized, "no GitHub account connected");
+			return Blob.Err();
+		}
+		GitHubOAuthTokens Tokens;
+		SW_ASSIGN(Tokens, ParseGitHubCredentialBlob(*Blob));
+		const TimeMs Now = Clock.Now();
+		const bool bNeed = bForceRefresh || AccessTokenNeedsRefresh(Tokens, Now);
+		if (!bNeed)
+		{
+			Log.Info("github_access_token_valid", {{"expires_in_s", Tokens.AccessExpiresAt > 0 ? std::to_string((Tokens.AccessExpiresAt - Now) / 1000) : std::string("unknown")}});
+			return Tokens.AccessToken;
+		}
+		if (!RefreshPossible(Tokens, Now))
+		{
+			if (bForceRefresh || (Tokens.AccessExpiresAt > 0 && Now >= Tokens.AccessExpiresAt))
+			{
+				return MakeError(ErrorCode::Unauthorized, "GitHub access token expired and no refresh token is available");
+			}
+			return Tokens.AccessToken;
+		}
+
+		Log.Info("github_token_refresh_started", {{"forced", bForceRefresh ? "yes" : "no"}});
+		GitHubDeviceFlow Flow(Http, ClientId.empty() ? std::string("x") : ClientId, Clock, "repo", std::move(WebBase));
+		auto Refreshed = Flow.Refresh(Tokens.RefreshToken);
+		if (!Refreshed)
+		{
+			Log.Warn("github_token_refresh_failed", {{"category", std::to_string(static_cast<int>(GitHubAuthService::ClassifyError(Refreshed.Err())))}});
+			return Refreshed.Err();
+		}
+		// Preserve refresh token if GitHub omitted a rotation (should not happen when expiration is on).
+		if (Refreshed->RefreshToken.empty()) Refreshed->RefreshToken = Tokens.RefreshToken;
+		if (Refreshed->Scope.empty()) Refreshed->Scope = Tokens.Scope;
+		const bool bRotated = Refreshed->RefreshToken != Tokens.RefreshToken;
+		if (Status W = Store->Write(CredentialKey, SerializeGitHubCredentialBlob(*Refreshed)); !W)
+		{
+			Log.Error("github_credential_store_failed", {{"op", "write_after_refresh"}});
+			return W.Err();
+		}
+		Log.Info("github_token_refresh_succeeded", {{"refresh_rotated", bRotated ? "yes" : "no"},
+			{"expires_in_s", Refreshed->AccessExpiresAt > 0 ? std::to_string((Refreshed->AccessExpiresAt - Clock.Now()) / 1000) : std::string("unknown")}});
+		if (bRotated) Log.Info("github_rotated_refresh_token_stored", {});
+		return Refreshed->AccessToken;
 	}
 
 	std::string ResolveGitHubOAuthClientId(const char* Embedded, const char* EnvValue)
@@ -84,6 +242,8 @@ namespace sw
 		{
 		case GitHubAuthState::Disconnected:
 			if (Error == GitHubAuthErrorKind::ClientIdMissing) return "GitHub integration is not configured in this build.";
+			if (Error == GitHubAuthErrorKind::TokenRevoked) return "GitHub authorization was revoked. Reconnect GitHub to continue.";
+			if (Error == GitHubAuthErrorKind::TokenInvalid) return "GitHub connection expired. Link GitHub again.";
 			return "Not connected";
 		case GitHubAuthState::Starting: return "Opening GitHub...";
 		case GitHubAuthState::WaitingForUser: return "Waiting for GitHub approval...";
@@ -100,8 +260,8 @@ namespace sw
 			case GitHubAuthErrorKind::GitHubUnreachable: return "Could not reach GitHub.";
 			case GitHubAuthErrorKind::DeviceCodeExpired: return "The code expired. Try again.";
 			case GitHubAuthErrorKind::AuthorizationDenied: return "GitHub access was denied.";
-			case GitHubAuthErrorKind::TokenInvalid:
-			case GitHubAuthErrorKind::TokenRevoked: return "GitHub connection expired. Link GitHub again.";
+			case GitHubAuthErrorKind::TokenRevoked: return "GitHub authorization was revoked. Reconnect GitHub to continue.";
+			case GitHubAuthErrorKind::TokenInvalid: return "GitHub connection expired. Link GitHub again.";
 			case GitHubAuthErrorKind::RateLimited: return "GitHub is rate limiting requests. Try again shortly.";
 			case GitHubAuthErrorKind::Cancelled: return "GitHub linking cancelled.";
 			case GitHubAuthErrorKind::CredentialStoreFailed: return "Could not store the GitHub credential securely.";
@@ -163,8 +323,10 @@ namespace sw
 		V = *Parsed;
 		if (auto Tok = json::GetOptionalString(V, "access_token", 512); Tok.Ok() && Tok->has_value())
 		{
+			auto Tokens = ParseTokenResponse(V, Clock);
+			if (!Tokens) return Tokens.Err();
 			Out.State = DevicePoll::Authorized;
-			Out.AccessToken = **Tok;
+			Out.Tokens = *Tokens;
 			return Out;
 		}
 		std::string Err;
@@ -180,6 +342,31 @@ namespace sw
 		else if (Err == "access_denied") Out.State = DevicePoll::Denied;
 		else return MakeError(ErrorCode::Unauthorized, "GitHub sign-in failed: " + Err);
 		return Out;
+	}
+
+	Result<GitHubOAuthTokens> GitHubDeviceFlow::Refresh(const std::string& RefreshToken)
+	{
+		if (RefreshToken.empty()) return MakeError(ErrorCode::Unauthorized, "no refresh token");
+		if (ClientId.empty()) return MakeError(ErrorCode::Unsupported, "GitHub integration is not configured in this build");
+		HttpResponse R;
+		SW_ASSIGN(R, Http->Send(FormPost(WebBase + "/login/oauth/access_token",
+			"client_id=" + FormEncode(ClientId) + "&grant_type=" + FormEncode("refresh_token") + "&refresh_token=" + FormEncode(RefreshToken))));
+		if (R.Status == 0) return MakeError(ErrorCode::Network, "no internet");
+		if (R.Status == 429) return MakeError(ErrorCode::RateLimited, "GitHub rate limited token refresh");
+		if (R.Status != 200) return MakeError(ErrorCode::Network, "GitHub token refresh failed (" + std::to_string(R.Status) + ")");
+		auto Parsed = json::Parse(R.Body);
+		if (!Parsed) return MakeError(ErrorCode::Invalid, "malformed token refresh response");
+		const json::Value& V = *Parsed;
+		if (auto Err = json::GetOptionalString(V, "error", 64); Err.Ok() && Err->has_value())
+		{
+			const std::string& E = **Err;
+			if (E == "bad_refresh_token" || E == "incorrect_client_credentials")
+			{
+				return MakeError(ErrorCode::Unauthorized, "GitHub refresh token revoked or invalid");
+			}
+			return MakeError(ErrorCode::Unauthorized, "GitHub token refresh failed: " + E);
+		}
+		return ParseTokenResponse(V, Clock);
 	}
 
 	Result<std::string> GitHubDeviceFlow::FetchLogin(const std::string& Token)
@@ -198,7 +385,13 @@ namespace sw
 		SW_ASSIGN(R, Http->Send(Req));
 		if (R.Status == 0) return MakeError(ErrorCode::Network, "no internet");
 		if (R.Status == 401) return MakeError(ErrorCode::Unauthorized, "GitHub rejected the credentials");
-		if (R.Status == 403) return MakeError(ErrorCode::Unauthorized, "GitHub revoked or forbade the credentials");
+		if (R.Status == 403)
+		{
+			const std::string Msg = R.Body.size() > 200 ? R.Body.substr(0, 200) : R.Body;
+			if (IsRateLimitedResponse(R.Status, R, Msg)) return MakeError(ErrorCode::RateLimited, "GitHub rate limited user lookup");
+			// 403 on /user is usually abuse detection / SSO — not proof the token is gone.
+			return MakeError(ErrorCode::BadState, "GitHub forbade the user lookup");
+		}
 		if (R.Status == 429) return MakeError(ErrorCode::RateLimited, "GitHub rate limited user lookup");
 		if (R.Status != 200) return MakeError(ErrorCode::Network, "GitHub user lookup failed (" + std::to_string(R.Status) + ")");
 		json::Value V;
@@ -214,6 +407,7 @@ namespace sw
 		if (Err.Code == ErrorCode::Unauthorized)
 		{
 			if (Err.Message.find("revok") != std::string::npos) return GitHubAuthErrorKind::TokenRevoked;
+			if (Err.Message.find("refresh token") != std::string::npos) return GitHubAuthErrorKind::TokenRevoked;
 			return GitHubAuthErrorKind::TokenInvalid;
 		}
 		if (Err.Code == ErrorCode::Invalid) return GitHubAuthErrorKind::MalformedResponse;
@@ -223,6 +417,7 @@ namespace sw
 			return GitHubAuthErrorKind::GitHubUnreachable;
 		}
 		if (Err.Code == ErrorCode::Io) return GitHubAuthErrorKind::CredentialStoreFailed;
+		if (Err.Code == ErrorCode::BadState) return GitHubAuthErrorKind::Other;
 		return GitHubAuthErrorKind::Other;
 	}
 
@@ -243,6 +438,22 @@ namespace sw
 		ErrorKind = NewError;
 	}
 
+	GitHubAuthDiagnostics GitHubAuthService::DiagnosticsUnlocked(TimeMs Now) const
+	{
+		GitHubOAuthTokens Tokens;
+		if (auto Blob = Store->Read(CredentialKey); Blob)
+		{
+			if (auto Parsed = ParseGitHubCredentialBlob(*Blob); Parsed) Tokens = *Parsed;
+		}
+		return MakeGitHubAuthDiagnostics(Tokens, Now, State == GitHubAuthState::Connected);
+	}
+
+	GitHubAuthDiagnostics GitHubAuthService::Diagnostics() const
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		return DiagnosticsUnlocked(Clock.Now());
+	}
+
 	GitHubAuthSnapshot GitHubAuthService::Snapshot() const
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
@@ -255,7 +466,20 @@ namespace sw
 		S.User = User;
 		S.bHasToken = bHasToken;
 		S.PlayerMessage = GitHubAuthPlayerMessage(State, ErrorKind, User);
+		S.Diagnostics = DiagnosticsUnlocked(Clock.Now());
 		return S;
+	}
+
+	Result<GitHubOAuthTokens> GitHubAuthService::LoadTokens() const
+	{
+		auto Blob = Store->Read(CredentialKey);
+		if (!Blob) return Blob.Err();
+		return ParseGitHubCredentialBlob(*Blob);
+	}
+
+	Status GitHubAuthService::SaveTokens(const GitHubOAuthTokens& Tokens)
+	{
+		return Store->Write(CredentialKey, SerializeGitHubCredentialBlob(Tokens));
 	}
 
 	Status GitHubAuthService::BeginLink()
@@ -338,9 +562,9 @@ namespace sw
 		return Poll;
 	}
 
-	Status GitHubAuthService::PersistAndConnect(const std::string& Token, GitHubUserInfo InUser)
+	Status GitHubAuthService::PersistAndConnect(const GitHubOAuthTokens& Tokens, GitHubUserInfo InUser)
 	{
-		if (Status W = Store->Write(CredentialKey, Token); !W)
+		if (Status W = SaveTokens(Tokens); !W)
 		{
 			SetState(GitHubAuthState::Error, GitHubAuthErrorKind::CredentialStoreFailed);
 			Log.Error("github_credential_store_failed", {{"op", "write"}});
@@ -350,13 +574,17 @@ namespace sw
 		bHasToken = true;
 		ActiveCode = {};
 		SetState(GitHubAuthState::Connected, GitHubAuthErrorKind::None);
-		Log.Info("github_auth_succeeded", {{"user", User.Login}, {"token_present", "yes"}});
+		const TimeMs Now = Clock.Now();
+		Log.Info("github_auth_succeeded", {{"user", User.Login}, {"token_present", "yes"},
+			{"refresh_present", Tokens.RefreshToken.empty() ? "no" : "yes"},
+			{"expires_in_s", Tokens.AccessExpiresAt > 0 ? std::to_string((Tokens.AccessExpiresAt - Now) / 1000) : std::string("unknown")}});
+		Log.Info("github_credentials_loaded", {{"access_token_present", "yes"}, {"refresh_token_present", Tokens.RefreshToken.empty() ? "no" : "yes"}});
 		return {};
 	}
 
-	Status GitHubAuthService::FinalizeAuthorized(std::string AccessToken)
+	Status GitHubAuthService::FinalizeAuthorized(GitHubOAuthTokens Tokens)
 	{
-		if (AccessToken.empty())
+		if (Tokens.AccessToken.empty())
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
 			SetState(GitHubAuthState::Error, GitHubAuthErrorKind::TokenInvalid);
@@ -369,10 +597,7 @@ namespace sw
 			SetState(GitHubAuthState::Authorizing, GitHubAuthErrorKind::None);
 		}
 		GitHubDeviceFlow Flow(Http, ClientIdCopy, Clock);
-		auto Profile = Flow.FetchUser(AccessToken);
-		// Wipe the local copy after use regardless of outcome.
-		const std::string TokenCopy = std::move(AccessToken);
-		AccessToken.clear();
+		auto Profile = Flow.FetchUser(Tokens.AccessToken);
 		if (!Profile)
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
@@ -381,7 +606,7 @@ namespace sw
 			return Profile.Err();
 		}
 		std::lock_guard<std::mutex> Lock(Mutex);
-		return PersistAndConnect(TokenCopy, *Profile);
+		return PersistAndConnect(Tokens, *Profile);
 	}
 
 	void GitHubAuthService::CancelLink()
@@ -407,10 +632,18 @@ namespace sw
 		return R;
 	}
 
+	Result<std::string> GitHubAuthService::EnsureValidAccessToken(bool bForceRefresh)
+	{
+		std::string ClientIdCopy;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			ClientIdCopy = ClientIdValue;
+		}
+		return ResolveGitHubAccessToken(Http, Store, Clock, ClientIdCopy, CredentialKey, bForceRefresh, Log);
+	}
+
 	Status GitHubAuthService::RestoreSession()
 	{
-		std::string Token;
-		std::string ClientIdCopy;
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
 			auto Tok = Store->Read(CredentialKey);
@@ -426,28 +659,75 @@ namespace sw
 				SetState(GitHubAuthState::Error, ClassifyError(Tok.Err()));
 				return Tok.Err();
 			}
-			Token = *Tok;
-			ClientIdCopy = ClientIdValue.empty() ? std::string("x") : ClientIdValue;
 			bHasToken = true;
+			Log.Info("github_credentials_loaded", {{"token_present", "yes"}});
+		}
+
+		auto Access = EnsureValidAccessToken(false);
+		if (!Access)
+		{
+			const GitHubAuthErrorKind Kind = ClassifyError(Access.Err());
+			std::lock_guard<std::mutex> Lock(Mutex);
+			if (Kind == GitHubAuthErrorKind::NoInternet || Kind == GitHubAuthErrorKind::GitHubUnreachable || Kind == GitHubAuthErrorKind::RateLimited)
+			{
+				bHasToken = true;
+				SetState(GitHubAuthState::Error, Kind);
+				Log.Warn("github_auth_restore_network", {{"token_present", "yes"}});
+				return Access.Err();
+			}
+			if (Kind == GitHubAuthErrorKind::TokenInvalid || Kind == GitHubAuthErrorKind::TokenRevoked)
+			{
+				Log.Info("github_authentication_recovery_failed", {{"reason", Access.Err().Message}});
+				(void)Store->Remove(CredentialKey);
+				bHasToken = false;
+				User = {};
+				SetState(GitHubAuthState::Disconnected, Kind);
+				return {};
+			}
+			bHasToken = true;
+			SetState(GitHubAuthState::Error, Kind);
+			return Access.Err();
+		}
+
+		std::string ClientIdCopy;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			ClientIdCopy = ClientIdValue.empty() ? std::string("x") : ClientIdValue;
 		}
 		GitHubDeviceFlow Flow(Http, ClientIdCopy, Clock);
-		auto Profile = Flow.FetchUser(Token);
+		auto Profile = Flow.FetchUser(*Access);
+		if (!Profile && Profile.Is(ErrorCode::Unauthorized))
+		{
+			Log.Info("github_request_returned_401", {{"op", "restore_user"}});
+			Log.Info("github_authentication_recovery_attempted", {});
+			auto Retried = EnsureValidAccessToken(true);
+			if (Retried)
+			{
+				Profile = Flow.FetchUser(*Retried);
+			}
+			else
+			{
+				Profile = Retried.Err();
+			}
+		}
 		std::lock_guard<std::mutex> Lock(Mutex);
 		if (!Profile)
 		{
 			const GitHubAuthErrorKind Kind = ClassifyError(Profile.Err());
-			if (Kind == GitHubAuthErrorKind::NoInternet || Kind == GitHubAuthErrorKind::GitHubUnreachable || Kind == GitHubAuthErrorKind::RateLimited)
+			if (Kind == GitHubAuthErrorKind::NoInternet || Kind == GitHubAuthErrorKind::GitHubUnreachable || Kind == GitHubAuthErrorKind::RateLimited
+				|| Kind == GitHubAuthErrorKind::Other)
 			{
-				// Keep the credential; player can retry when the network recovers.
+				// Keep the credential; player can retry when the network recovers / rate limit clears.
 				bHasToken = true;
 				SetState(GitHubAuthState::Error, Kind);
 				Log.Warn("github_auth_restore_network", {{"token_present", "yes"}});
 				return Profile.Err();
 			}
+			Log.Info("github_authentication_recovery_failed", {{"reason", Profile.Err().Message}});
 			(void)Store->Remove(CredentialKey);
 			bHasToken = false;
 			User = {};
-			SetState(GitHubAuthState::Disconnected, GitHubAuthErrorKind::None);
+			SetState(GitHubAuthState::Disconnected, Kind == GitHubAuthErrorKind::TokenRevoked ? Kind : GitHubAuthErrorKind::TokenInvalid);
 			Log.Info("github_auth_restore_cleared", {{"token_present", "no"}});
 			return {};
 		}
@@ -460,14 +740,26 @@ namespace sw
 
 	Result<GitHubUserInfo> GitHubAuthService::TestAccess()
 	{
-		auto Tok = Store->Read(CredentialKey);
-		if (!Tok)
+		auto Access = EnsureValidAccessToken(false);
+		if (!Access)
 		{
-			if (Tok.Is(ErrorCode::NotFound)) return MakeError(ErrorCode::Unauthorized, "no GitHub account connected");
-			return Tok.Err();
+			if (Access.Is(ErrorCode::NotFound)) return MakeError(ErrorCode::Unauthorized, "no GitHub account connected");
+			return Access.Err();
 		}
-		GitHubDeviceFlow Flow(Http, ClientIdValue.empty() ? std::string("x") : ClientIdValue, Clock);
-		auto Profile = Flow.FetchUser(*Tok);
+		std::string ClientIdCopy;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			ClientIdCopy = ClientIdValue.empty() ? std::string("x") : ClientIdValue;
+		}
+		GitHubDeviceFlow Flow(Http, ClientIdCopy, Clock);
+		auto Profile = Flow.FetchUser(*Access);
+		if (!Profile && Profile.Is(ErrorCode::Unauthorized))
+		{
+			Log.Info("github_request_returned_401", {{"op", "test_access"}});
+			auto Retried = EnsureValidAccessToken(true);
+			if (!Retried) return Retried.Err();
+			Profile = Flow.FetchUser(*Retried);
+		}
 		if (!Profile) return Profile.Err();
 		std::lock_guard<std::mutex> Lock(Mutex);
 		User = *Profile;

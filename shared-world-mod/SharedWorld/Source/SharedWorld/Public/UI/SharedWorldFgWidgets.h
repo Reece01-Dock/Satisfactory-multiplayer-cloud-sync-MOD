@@ -28,11 +28,15 @@ namespace SharedWorldFg
 		TEXT("/Game/FactoryGame/Interface/Font/Heebo-Bold.Heebo-Bold");
 	inline const TCHAR* HeeboRegularPath =
 		TEXT("/Game/FactoryGame/Interface/Font/Heebo-Regular.Heebo-Regular");
+	/** Vanilla main-menu / in-game error popup (SetBody / SetButtonText). */
+	inline const TCHAR* ErrorMessagePath =
+		TEXT("/Game/FactoryGame/Interface/UI/Menu/MainMenu/Widget_ErrorMessage.Widget_ErrorMessage_C");
 
 	UClass* LoadSubMenuBackgroundClass();
 	UClass* LoadFrontEndButtonClass();
 	UClass* LoadStandardButtonClass();
 	UClass* LoadModSelectButtonClass();
+	UClass* LoadErrorMessageClass();
 
 	/** Apply Satisfactory menu font to a text block (falls back to CoreStyle if missing). */
 	void ApplyMenuFont(UTextBlock* Text, int32 Size, bool bBold);
@@ -57,6 +61,13 @@ namespace SharedWorldFg
 
 	/** Create Widget_StandardButton and SetText(Label). */
 	UUserWidget* CreateStandardButton(UUserWidget* Outer, const FText& Label);
+
+	/**
+	 * Show a transparent top-of-screen notice overlay (not the centered FG modal).
+	 * Receiver+DismissFunc are bound to OK / auto-hide so the toast can be removed.
+	 */
+	UUserWidget* ShowErrorMessage(UObject* WorldContext, const FText& Body, const FText& ButtonText,
+		UObject* DismissReceiver, FName DismissFunc);
 
 	void SetFrontEndTitle(UUserWidget* Button, const FText& Title);
 	void BindFrontEndClicked(UUserWidget* Button, UObject* Receiver, FName FuncName);

@@ -38,6 +38,11 @@ namespace sw
 		std::string UserAgent = "SatisfactorySharedWorld";
 		/** Returns the current OAuth access token (never logged, never stored in the repo). */
 		std::function<Result<std::string>()> Token;
+		/**
+		 * Optional: after a 401, refresh credentials once before retrying.
+		 * Must not prompt the user; returns Unauthorized when recovery is impossible.
+		 */
+		std::function<Status()> RefreshOnUnauthorized;
 
 		std::string Branch() const { return "shared-world/" + WorldId; }
 		Status Validate() const;

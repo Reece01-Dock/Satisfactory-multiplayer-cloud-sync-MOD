@@ -215,17 +215,17 @@ SW_TEST(DeviceFlow_HappyPathWithSlowDown)
 	auto P3 = Flow.Poll(*Code);
 	ASSERT_OK(P3);
 	ASSERT_TRUE(P3->State == DevicePoll::Authorized);
-	EXPECT_EQ(P3->AccessToken, std::string("gho_SECRET"));
+	EXPECT_EQ(P3->AccessToken(), std::string("gho_SECRET"));
 	EXPECT_TRUE(Http->Seen[1].Body.find("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code") != std::string::npos);
 
-	auto Login = Flow.FetchLogin(P3->AccessToken);
+	auto Login = Flow.FetchLogin(P3->AccessToken());
 	ASSERT_OK(Login);
 	EXPECT_EQ(*Login, std::string("octo-player"));
 	EXPECT_EQ(Http->Seen[4].Url, std::string("https://api.github.com/user"));
 
 	MemoryCredentialStore Creds;
 	EXPECT_ERR(Creds.Read("github"), ErrorCode::NotFound);
-	ASSERT_OK(Creds.Write("github", P3->AccessToken));
+	ASSERT_OK(Creds.Write("github", P3->AccessToken()));
 	EXPECT_EQ(Creds.Read("github").Value(), std::string("gho_SECRET"));
 	ASSERT_OK(Creds.Remove("github"));
 	EXPECT_ERR(Creds.Read("github"), ErrorCode::NotFound);

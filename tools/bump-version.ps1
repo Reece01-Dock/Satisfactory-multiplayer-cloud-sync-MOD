@@ -50,7 +50,8 @@ if ($new -notmatch '^\d+\.\d+\.\d+(\-[0-9A-Za-z\.-]+)?$') {
 }
 
 $majorInt = [int](($new -split '\.')[0])
-$remoteRange = ">=$new <$($majorInt + 1).0.0"
+# Exact match: host and all players must run this same Shared World build.
+$remoteRange = "=$new"
 
 function Set-TopLevelField([string]$Text, [string]$Name, [string]$Value, [switch]$AsNumber) {
 	# Top-level only: field alone on its line (Plugins SemVersion sits mid-line).

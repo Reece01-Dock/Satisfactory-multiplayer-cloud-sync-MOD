@@ -44,6 +44,17 @@ namespace sw
 		return true;
 	}
 
+	/** True when Local can safely open a world stamped with WorldVer. */
+	static bool LocalCanOpenWorldMod(const std::string& Local, const std::string& WorldVer)
+	{
+		// Exact match: everyone is on the same build.
+		if (Local == WorldVer) return true;
+		if (SameCompatLine(Local, WorldVer) && CompareVersions(Local, WorldVer) >= 0) return true;
+		// Host on a newer build may open an older world once; world.json is bumped so
+		// everyone else must update before they can play.
+		return CompareVersions(Local, WorldVer) > 0;
+	}
+
 	Status CheckCompatibility(const LocalVersions& Local, const WorldInfo& Info, const std::optional<RevisionMeta>& Head)
 	{
 		if (Head && !Head->GameBuild.empty() && !Local.GameBuild.empty() && CompareVersions(Head->GameBuild, Local.GameBuild) > 0)
@@ -51,9 +62,11 @@ namespace sw
 			return MakeError(ErrorCode::Unsupported, "This Shared World was last saved by a newer Satisfactory version (" + Head->GameBuild +
 				"). Update the game (yours is " + Local.GameBuild + ").");
 		}
-		if (!Info.ModVersion.empty() && !Local.ModVersion.empty() && !SameCompatLine(Info.ModVersion, Local.ModVersion))
+		if (!Info.ModVersion.empty() && !Local.ModVersion.empty() && !LocalCanOpenWorldMod(Local.ModVersion, Info.ModVersion))
 		{
-			return MakeError(ErrorCode::Unsupported, "This Shared World requires Shared World mod " + Info.ModVersion + " (you have " + Local.ModVersion + ").");
+			return MakeError(ErrorCode::Unsupported,
+				"This Shared World requires Shared World mod " + Info.ModVersion +
+				" (you have " + Local.ModVersion + ").\n\nEveryone must use the same mod version — update Shared World together.");
 		}
 		for (const RequiredMod& Req : Info.RequiredMods)
 		{
@@ -66,9 +79,11 @@ namespace sw
 			{
 				return MakeError(ErrorCode::Unsupported, "This Shared World requires the mod " + Req.ModReference + " " + Req.Version + ".");
 			}
-			if (!SameCompatLine(Have->Version, Req.Version))
+			if (!LocalCanOpenWorldMod(Have->Version, Req.Version))
 			{
-				return MakeError(ErrorCode::Unsupported, "This Shared World requires " + Req.ModReference + " " + Req.Version + " (you have " + Have->Version + ").");
+				return MakeError(ErrorCode::Unsupported,
+					"This Shared World requires " + Req.ModReference + " " + Req.Version +
+					" (you have " + Have->Version + ").\n\nEveryone must use the same mod version.");
 			}
 		}
 		return {};

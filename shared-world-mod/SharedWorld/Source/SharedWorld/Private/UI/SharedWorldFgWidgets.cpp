@@ -8,11 +8,17 @@
 #include "Components/ContentWidget.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
+#include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/PlayerController.h"
 #include "Components/Button.h"
 #include "Styling/CoreStyle.h"
+#include "Subsystems/GameInstanceSubsystem.h"
 #include "UObject/UnrealType.h"
 #include "SharedWorldTypes.h"
+#include "UI/SharedWorldNoticeOverlay.h"
+#include "Widgets/Layout/Anchors.h"
 
 namespace SharedWorldFg
 {
@@ -189,6 +195,79 @@ namespace SharedWorldFg
 	{
 		UClass* C = LoadClass<UUserWidget>(nullptr, ModSelectButtonPath);
 		return C; // optional — SML may not be loaded yet in editor
+	}
+
+	UClass* LoadErrorMessageClass()
+	{
+		UClass* C = LoadClass<UUserWidget>(nullptr, ErrorMessagePath);
+		if (!C)
+		{
+			UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=fg_load_fail asset=Widget_ErrorMessage"));
+		}
+		return C;
+	}
+
+	namespace
+	{
+		void CallNamedTextSetter(UObject* Obj, FName FuncName, FName PropName, const FText& Text)
+		{
+			if (!Obj) return;
+			if (UFunction* Fn = Obj->FindFunction(FuncName))
+			{
+				struct FParams { FText Text; };
+				FParams P{Text};
+				Obj->ProcessEvent(Fn, &P);
+				return;
+			}
+			SetTextProp(Obj, PropName, Text);
+		}
+	}
+
+	UUserWidget* ShowErrorMessage(UObject* WorldContext, const FText& Body, const FText& ButtonText,
+		UObject* DismissReceiver, FName DismissFunc)
+	{
+		if (!WorldContext) return nullptr;
+
+		UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull) : nullptr;
+		APlayerController* PC = nullptr;
+		if (World)
+		{
+			PC = World->GetFirstPlayerController();
+		}
+		if (!PC)
+		{
+			if (UGameInstance* AsGI = Cast<UGameInstance>(WorldContext))
+			{
+				PC = AsGI->GetFirstLocalPlayerController();
+			}
+			else if (const UGameInstanceSubsystem* Sub = Cast<UGameInstanceSubsystem>(WorldContext))
+			{
+				if (UGameInstance* OwnerGI = Sub->GetGameInstance())
+				{
+					PC = OwnerGI->GetFirstLocalPlayerController();
+				}
+			}
+		}
+		if (!PC) return nullptr;
+
+		USharedWorldNoticeOverlay* Toast = CreateWidget<USharedWorldNoticeOverlay>(PC);
+		if (!Toast) return nullptr;
+		EnsureConstructed(Toast);
+
+		if (DismissReceiver && !DismissFunc.IsNone())
+		{
+			BindMulticast(Toast, TEXT("OnDismissed"), DismissReceiver, DismissFunc);
+		}
+
+		Toast->AddToViewport(1000);
+		Toast->SetAnchorsInViewport(FAnchors(0.f, 0.f, 1.f, 1.f));
+		Toast->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+		Toast->ShowNotice(
+			Body,
+			ButtonText.IsEmpty() ? NSLOCTEXT("SharedWorld", "ErrorOk", "OK") : ButtonText,
+			12.f);
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=error_popup shown=1 style=top_toast"));
+		return Toast;
 	}
 
 	void SetBoolProp(UObject* Obj, FName Name, bool Value)

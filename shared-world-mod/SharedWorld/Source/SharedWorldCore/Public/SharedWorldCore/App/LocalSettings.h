@@ -101,8 +101,13 @@ namespace sw
 	{
 		std::shared_ptr<IHttpClient> Http;
 		std::shared_ptr<ICredentialStore> Credentials;
+		/** Public OAuth App client id; required to refresh expiring access tokens. */
+		std::string GitHubOAuthClientId;
 		std::string GitHubApiBase = "https://api.github.com";
 		std::string GitHubUploadBase = "https://uploads.github.com";
+		std::string GitHubWebBase = "https://github.com";
+		/** Wall clock used for token expiry / refresh. Null → SystemClock per call. */
+		const IClock* Clock = nullptr;
 	};
 
 	struct WorldStorage

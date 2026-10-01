@@ -18,8 +18,11 @@ namespace sw
 
 	/**
 	 * Refuses when continuing could damage the world: the head revision was
-	 * written by a newer game build, the world's mod version has a different
-	 * major (0.x: minor) version, or a required mod is missing / different.
+	 * written by a newer game build, the local mod is older than the world's
+	 * required version, or a required mod is missing / too old.
+	 * Newer mods may open older worlds once (world.json is then bumped so
+	 * friends must update to the same version). Multiplayer peers are also
+	 * locked to an exact RemoteVersionRange in the .uplugin.
 	 * Returns Unsupported with a player-facing message.
 	 */
 	Status CheckCompatibility(const LocalVersions& Local, const WorldInfo& Info, const std::optional<RevisionMeta>& Head);

@@ -32,6 +32,12 @@ namespace
 
 	const char* StartReply = R"({"device_code":"dc-secret","user_code":"ABCD-EFGH","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5})";
 	const char* UserReply = R"({"login":"Reece01-Dock","id":42,"name":"Reece","avatar_url":"https://avatars.githubusercontent.com/u/42"})";
+	const char* TokenWithRefresh =
+		R"({"access_token":"gho_ACCESS1","token_type":"bearer","scope":"repo","expires_in":28800,"refresh_token":"ghr_REFRESH1","refresh_token_expires_in":15897600})";
+	const char* RefreshRotated =
+		R"({"access_token":"gho_ACCESS2","token_type":"bearer","scope":"repo","expires_in":28800,"refresh_token":"ghr_REFRESH2","refresh_token_expires_in":15897600})";
+	const char* RefreshRotatedAgain =
+		R"({"access_token":"gho_ACCESS3","token_type":"bearer","scope":"repo","expires_in":28800,"refresh_token":"ghr_REFRESH3","refresh_token_expires_in":15897600})";
 
 	std::shared_ptr<GitHubAuthService> MakeService(std::shared_ptr<ScriptedHttp> Http, std::shared_ptr<MemoryCredentialStore> Store, FakeClock& Clock, const char* ClientId = "Iv1.client")
 	{
@@ -91,14 +97,16 @@ SW_TEST(GitHubAuth_DeviceStartUserCodeAndPendingSlowDownSuccess)
 	ASSERT_TRUE(P3->State == DevicePoll::Authorized);
 	EXPECT_TRUE(Auth->Snapshot().State == GitHubAuthState::Authorizing);
 
-	std::string Token = std::move(P3->AccessToken);
-	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Token)));
+	GitHubOAuthTokens Tokens = std::move(P3->Tokens);
+	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Tokens)));
 	EXPECT_TRUE(Auth->Snapshot().State == GitHubAuthState::Connected);
 	EXPECT_EQ(Auth->Snapshot().User.Login, std::string("Reece01-Dock"));
 	EXPECT_EQ(Auth->Snapshot().User.Id, std::string("42"));
 	EXPECT_EQ(Auth->Snapshot().User.AvatarUrl, std::string("https://avatars.githubusercontent.com/u/42"));
 	EXPECT_TRUE(Auth->Snapshot().bHasToken);
-	EXPECT_EQ(Store->Read("test/github").Value(), std::string("gho_SECRET"));
+	auto Stored = ParseGitHubCredentialBlob(Store->Read("test/github").Value());
+	ASSERT_OK(Stored);
+	EXPECT_EQ(Stored->AccessToken, std::string("gho_SECRET"));
 }
 
 SW_TEST(GitHubAuth_ExpiredDeniedNetworkMalformed)
@@ -141,12 +149,12 @@ SW_TEST(GitHubAuth_PersistRestoreInvalidDisconnect)
 		{200, R"({"access_token":"gho_KEEP","token_type":"bearer","scope":"repo"})"},
 		{200, UserReply},
 		{200, UserReply}, // restore
-		{401, "{}"},      // invalid stored token
+		{401, "{}"},      // invalid stored token, no refresh → clear
 	};
 	ASSERT_OK(Auth->BeginLink());
 	auto Poll = Auth->PollOnce();
 	ASSERT_OK(Poll);
-	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Poll->AccessToken)));
+	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Poll->Tokens)));
 	EXPECT_TRUE(Auth->Snapshot().State == GitHubAuthState::Connected);
 
 	auto Auth2 = MakeService(Http, Store, Clock);
@@ -155,7 +163,7 @@ SW_TEST(GitHubAuth_PersistRestoreInvalidDisconnect)
 	EXPECT_EQ(Auth2->Snapshot().User.Login, std::string("Reece01-Dock"));
 
 	auto Auth3 = MakeService(Http, Store, Clock);
-	ASSERT_OK(Auth3->RestoreSession()); // 401 clears credential
+	ASSERT_OK(Auth3->RestoreSession()); // 401 clears credential when refresh impossible
 	EXPECT_TRUE(Auth3->Snapshot().State == GitHubAuthState::Disconnected);
 	EXPECT_ERR(Store->Read("test/github"), ErrorCode::NotFound);
 
@@ -195,7 +203,7 @@ SW_TEST(GitHubAuth_CancelStopsLinkAndTokenNeverInLogs)
 	ASSERT_OK(Auth->BeginLink());
 	auto Poll = Auth->PollOnce();
 	ASSERT_OK(Poll);
-	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Poll->AccessToken)));
+	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Poll->Tokens)));
 	EXPECT_TRUE(!Sink->Contains("gho_"));
 	EXPECT_TRUE(Sink->Contains("github_auth_succeeded"));
 	EXPECT_TRUE(Sink->Contains("user=Reece01-Dock"));
@@ -215,6 +223,8 @@ SW_TEST(GitHubAuth_TestAccessAndPlayerMessages)
 	EXPECT_EQ(GitHubAuthPlayerMessage(GitHubAuthState::WaitingForUser, GitHubAuthErrorKind::None), std::string("Waiting for GitHub approval..."));
 	EXPECT_EQ(GitHubAuthPlayerMessage(GitHubAuthState::Expired, GitHubAuthErrorKind::DeviceCodeExpired), std::string("The code expired. Try again."));
 	EXPECT_EQ(GitHubAuthPlayerMessage(GitHubAuthState::Denied, GitHubAuthErrorKind::AuthorizationDenied), std::string("GitHub access was denied."));
+	EXPECT_EQ(GitHubAuthPlayerMessage(GitHubAuthState::Disconnected, GitHubAuthErrorKind::TokenRevoked),
+		std::string("GitHub authorization was revoked. Reconnect GitHub to continue."));
 }
 
 SW_TEST(GitHubAuth_FetchUserProfile)
@@ -229,4 +239,181 @@ SW_TEST(GitHubAuth_FetchUserProfile)
 	EXPECT_EQ(U->Name, std::string("Reece"));
 	EXPECT_TRUE(Http->Seen[0].Headers.end() != std::find_if(Http->Seen[0].Headers.begin(), Http->Seen[0].Headers.end(),
 		[](const auto& H) { return H.first == "Authorization"; }));
+}
+
+// authenticate → save → restart auth subsystem → load → still authenticated
+SW_TEST(GitHubAuth_PersistenceAcrossRestart)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	auto Auth = MakeService(Http, Store, Clock);
+	Http->Replies = {{200, StartReply}, {200, TokenWithRefresh}, {200, UserReply}, {200, UserReply}};
+	ASSERT_OK(Auth->BeginLink());
+	auto Poll = Auth->PollOnce();
+	ASSERT_OK(Poll);
+	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Poll->Tokens)));
+
+	auto Auth2 = MakeService(Http, Store, Clock);
+	ASSERT_OK(Auth2->RestoreSession());
+	EXPECT_TRUE(Auth2->Snapshot().State == GitHubAuthState::Connected);
+	EXPECT_EQ(Auth2->Snapshot().User.Login, std::string("Reece01-Dock"));
+	EXPECT_TRUE(Auth2->Snapshot().Diagnostics.bRefreshTokenPresent);
+	EXPECT_TRUE(Auth2->Snapshot().Diagnostics.bRefreshPossible);
+	EXPECT_TRUE(Auth2->Snapshot().Diagnostics.ExpiresInSeconds > 0);
+}
+
+// expired access + valid refresh → automatic refresh → no login prompt
+SW_TEST(GitHubAuth_AccessTokenExpiryAutoRefresh)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	auto Auth = MakeService(Http, Store, Clock);
+	Http->Replies = {{200, StartReply}, {200, TokenWithRefresh}, {200, UserReply}};
+	ASSERT_OK(Auth->BeginLink());
+	auto Poll = Auth->PollOnce();
+	ASSERT_OK(Poll);
+	ASSERT_OK(Auth->FinalizeAuthorized(std::move(Poll->Tokens)));
+
+	Clock.Advance(Seconds(28800)); // access token expired
+	Http->Replies = {{200, RefreshRotated}, {200, UserReply}};
+	auto Auth2 = MakeService(Http, Store, Clock);
+	ASSERT_OK(Auth2->RestoreSession());
+	EXPECT_TRUE(Auth2->Snapshot().State == GitHubAuthState::Connected);
+	EXPECT_EQ(Auth2->Snapshot().User.Login, std::string("Reece01-Dock"));
+	auto Stored = ParseGitHubCredentialBlob(Store->Read("test/github").Value());
+	ASSERT_OK(Stored);
+	EXPECT_EQ(Stored->AccessToken, std::string("gho_ACCESS2"));
+	EXPECT_EQ(Stored->RefreshToken, std::string("ghr_REFRESH2"));
+	EXPECT_TRUE(Http->Seen.size() >= 2);
+	EXPECT_TRUE(Http->Seen[Http->Seen.size() - 2].Body.find("grant_type=refresh_token") != std::string::npos);
+}
+
+// refresh rotates refresh token; second refresh uses the NEW one
+SW_TEST(GitHubAuth_RefreshTokenRotationPersisted)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	GitHubOAuthTokens Initial;
+	Initial.AccessToken = "gho_OLD";
+	Initial.RefreshToken = "ghr_REFRESH1";
+	Initial.AccessExpiresAt = StartTime + Seconds(60);
+	Initial.RefreshExpiresAt = StartTime + Seconds(15897600);
+	ASSERT_OK(Store->Write("test/github", SerializeGitHubCredentialBlob(Initial)));
+
+	Http->Replies = {{200, RefreshRotated}};
+	auto T1 = ResolveGitHubAccessToken(Http, Store, Clock, "Iv1.client", "test/github", true);
+	ASSERT_OK(T1);
+	EXPECT_EQ(*T1, std::string("gho_ACCESS2"));
+	auto After1 = ParseGitHubCredentialBlob(Store->Read("test/github").Value());
+	ASSERT_OK(After1);
+	EXPECT_EQ(After1->RefreshToken, std::string("ghr_REFRESH2"));
+
+	Http->Replies = {{200, RefreshRotatedAgain}};
+	auto T2 = ResolveGitHubAccessToken(Http, Store, Clock, "Iv1.client", "test/github", true);
+	ASSERT_OK(T2);
+	EXPECT_EQ(*T2, std::string("gho_ACCESS3"));
+	EXPECT_TRUE(Http->Seen.back().Body.find("ghr_REFRESH2") != std::string::npos);
+	auto After2 = ParseGitHubCredentialBlob(Store->Read("test/github").Value());
+	ASSERT_OK(After2);
+	EXPECT_EQ(After2->RefreshToken, std::string("ghr_REFRESH3"));
+}
+
+// expired access + invalid refresh → ask user to authenticate
+SW_TEST(GitHubAuth_FailedRefreshPromptsRelink)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	GitHubOAuthTokens Initial;
+	Initial.AccessToken = "gho_OLD";
+	Initial.RefreshToken = "ghr_DEAD";
+	Initial.AccessExpiresAt = StartTime; // already expired
+	Initial.RefreshExpiresAt = StartTime + Seconds(15897600);
+	ASSERT_OK(Store->Write("test/github", SerializeGitHubCredentialBlob(Initial)));
+
+	Http->Replies = {{200, R"({"error":"bad_refresh_token","error_description":"The refresh token is invalid."})"}};
+	auto Auth = MakeService(Http, Store, Clock);
+	ASSERT_OK(Auth->RestoreSession());
+	EXPECT_TRUE(Auth->Snapshot().State == GitHubAuthState::Disconnected);
+	EXPECT_TRUE(Auth->Snapshot().Error == GitHubAuthErrorKind::TokenRevoked
+		|| Auth->Snapshot().Error == GitHubAuthErrorKind::TokenInvalid);
+	EXPECT_ERR(Store->Read("test/github"), ErrorCode::NotFound);
+	EXPECT_EQ(GitHubAuthPlayerMessage(Auth->Snapshot().State, Auth->Snapshot().Error),
+		std::string("GitHub authorization was revoked. Reconnect GitHub to continue."));
+}
+
+// 403 permissions/rate limit must NOT delete credentials
+SW_TEST(GitHubAuth_403DoesNotClearCredentials)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	ASSERT_OK(Store->Write("test/github", SerializeGitHubCredentialBlob(GitHubOAuthTokens{"gho_OK", "ghr_OK", StartTime + Seconds(3600), StartTime + Seconds(999999)})));
+
+	Http->Replies = {{403, R"({"message":"You need at least the `repo` scope"})"}};
+	auto Auth = MakeService(Http, Store, Clock);
+	EXPECT_ERR(Auth->RestoreSession(), ErrorCode::BadState);
+	EXPECT_TRUE(Auth->Snapshot().bHasToken);
+	EXPECT_TRUE(Store->Read("test/github").Ok());
+
+	Http->Replies = {{403, R"({"message":"API rate limit exceeded"})"}};
+	Http->Seen.clear();
+	// Attach rate-limit signal via a custom reply: FetchUser checks body + would need headers.
+	// Use 429 which is unambiguously RateLimited.
+	Http->Replies = {{429, R"({"message":"API rate limit exceeded"})"}};
+	auto Auth2 = MakeService(Http, Store, Clock);
+	EXPECT_ERR(Auth2->RestoreSession(), ErrorCode::RateLimited);
+	EXPECT_TRUE(Auth2->Snapshot().bHasToken);
+	EXPECT_TRUE(Store->Read("test/github").Ok());
+}
+
+// temporary network outage must NOT unlink GitHub
+SW_TEST(GitHubAuth_NetworkFailureKeepsCredentials)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	ASSERT_OK(Store->Write("test/github", "gho_STILL_HERE"));
+	Http->Replies = {{0, ""}};
+	auto Auth = MakeService(Http, Store, Clock);
+	EXPECT_ERR(Auth->RestoreSession(), ErrorCode::Network);
+	EXPECT_TRUE(Auth->Snapshot().bHasToken);
+	EXPECT_EQ(Store->Read("test/github").Value(), std::string("gho_STILL_HERE"));
+
+	Http->Replies = {{200, UserReply}};
+	ASSERT_OK(Auth->RestoreSession());
+	EXPECT_TRUE(Auth->Snapshot().State == GitHubAuthState::Connected);
+}
+
+SW_TEST(GitHubAuth_LegacyBareTokenStillLoads)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	ASSERT_OK(Store->Write("test/github", "gho_LEGACY"));
+	Http->Replies = {{200, UserReply}};
+	auto Auth = MakeService(Http, Store, Clock);
+	ASSERT_OK(Auth->RestoreSession());
+	EXPECT_TRUE(Auth->Snapshot().State == GitHubAuthState::Connected);
+	EXPECT_EQ(Auth->EnsureValidAccessToken().Value(), std::string("gho_LEGACY"));
+}
+
+SW_TEST(GitHubAuth_ProactiveRefreshBeforeExpiry)
+{
+	auto Http = std::make_shared<ScriptedHttp>();
+	auto Store = std::make_shared<MemoryCredentialStore>();
+	FakeClock Clock(StartTime);
+	GitHubOAuthTokens Initial;
+	Initial.AccessToken = "gho_SOON";
+	Initial.RefreshToken = "ghr_REFRESH1";
+	Initial.AccessExpiresAt = StartTime + Minutes(4); // inside 5-minute skew
+	Initial.RefreshExpiresAt = StartTime + Seconds(15897600);
+	ASSERT_OK(Store->Write("test/github", SerializeGitHubCredentialBlob(Initial)));
+	Http->Replies = {{200, RefreshRotated}};
+	auto Tok = ResolveGitHubAccessToken(Http, Store, Clock, "Iv1.client", "test/github", false);
+	ASSERT_OK(Tok);
+	EXPECT_EQ(*Tok, std::string("gho_ACCESS2"));
 }

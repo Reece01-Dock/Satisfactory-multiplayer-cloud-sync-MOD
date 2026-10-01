@@ -84,6 +84,8 @@ namespace sw
 		std::string Message;
 		std::vector<std::string> Steps; // recent notifications, oldest first
 		std::optional<ErrorInfo> Error;
+		/** One-shot popup for the player; clear with AcknowledgeNotice() after showing. */
+		std::optional<std::string> PlayerNotice;
 		std::string HostName;
 		std::optional<JoinInfo> Join;
 		std::string SavePath;           // for ReadyToHost
@@ -137,6 +139,8 @@ namespace sw
 		void Cancel();
 		/** Acknowledge an error, a finished join, or a lost lease. */
 		void Dismiss();
+		/** Clear View().PlayerNotice after the game has shown it. */
+		void AcknowledgeNotice();
 		/** Restore revision From as a new revision (needs RestoreRevision permission). */
 		void Restore(int64_t FromRevision);
 

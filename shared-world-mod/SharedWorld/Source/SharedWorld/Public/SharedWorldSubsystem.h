@@ -243,6 +243,14 @@ public:
 	/** True while crash recovery / successor takeover is in flight. */
 	bool IsHostMigrationInFlight(const FString& WorldId) const;
 
+	/** Show a transparent top toast for a player-facing error / notice. */
+	void ShowPlayerError(const FText& Message);
+	/** Queue a notice to show after travel (version bumps during Play). */
+	void QueuePlayerNotice(const FText& Message);
+	void FlushPendingPlayerNotice();
+	UFUNCTION()
+	void DismissPlayerError();
+
 private:
 	void PushMigrationStatusToMenus(const FText& Message);
 	void HandleActorsInitialized(const UWorld::FActorsInitializedParams& Params);
@@ -323,7 +331,11 @@ private:
 	TWeakObjectPtr<UWorld> MenuWorld;
 	TWeakObjectPtr<class USharedWorldPanel> MenuPanel;
 	TWeakObjectPtr<class USharedWorldMigrationOverlay> MigrationOverlay;
+	TWeakObjectPtr<class UUserWidget> ActiveErrorPopup;
 	FString LastOverlayMessage;
+	/** Survives map travel: version-bump notices are shown after the world loads. */
+	FString PendingPlayerNotice;
+	FString LastShownErrorMessage;
 	double LastSummaryRefresh = 0.0;
 	double LastPauseInjectAttempt = 0.0;
 };
