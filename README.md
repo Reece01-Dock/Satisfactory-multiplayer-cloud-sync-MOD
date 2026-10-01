@@ -29,8 +29,8 @@ a new revision.
 | `STATUS.md` | What works, what is verified, what still needs the game |
 
 **Status: development preview.** The core is implemented and tested; the
-Unreal layer is written but has not been fully validated in game yet.
-Read `STATUS.md` before using it.
+Unreal layer compiles and packages (Shipping). In-game runtime validation
+is still outstanding — see `STATUS.md`.
 
 The original project is by Vojtak42; this repository is licensed under the
 terms in `LICENSE`.

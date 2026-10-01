@@ -3,6 +3,11 @@
 /shared-world-mod/SharedWorld/Intermediate/
 # Native core-tests CMake build
 /build/
-
 # Local SMR upload zips
 /dist/
+# Editor / OS junk
+*.user
+*.suo
+.vs/
+.DS_Store
+Thumbs.db
