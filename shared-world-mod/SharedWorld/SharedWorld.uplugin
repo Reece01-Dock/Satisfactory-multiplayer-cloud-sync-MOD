@@ -1,8 +1,8 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.0.0",
-	"SemVersion": "1.0.0",
+	"VersionName": "1.0.1",
+	"SemVersion": "1.0.1",
 	"GameVersion": ">=491125",
 	"FriendlyName": "Shared World",
 	"Description": "Play one shared multiplayer world with friends. Press Play Shared World: it joins the friend who is hosting, or downloads the latest save and hosts. Runs entirely inside the game; the world is stored in a GitHub repository or a shared folder.",
@@ -13,7 +13,7 @@
 	"IsBetaVersion": true,
 	"Installed": false,
 	"RequiredOnRemote": true,
-	"RemoteVersionRange": ">=1.0.0 <2.0.0",
+	"RemoteVersionRange": ">=1.0.1 <2.0.0",
 	"Modules": [
 		{
 			"Name": "SharedWorld",
@@ -32,23 +32,28 @@
 		},
 		{
 			"Name": "OnlineIntegration",
-			"Enabled": true
+			"Enabled": true,
+			"BasePlugin": true
 		},
 		{
 			"Name": "OnlineServices",
-			"Enabled": true
+			"Enabled": true,
+			"BasePlugin": true
 		},
 		{
 			"Name": "OnlineSubsystem",
-			"Enabled": true
+			"Enabled": true,
+			"BasePlugin": true
 		},
 		{
 			"Name": "OnlineSubsystemUtils",
-			"Enabled": true
+			"Enabled": true,
+			"BasePlugin": true
 		},
 		{
 			"Name": "ModelViewViewModel",
-			"Enabled": true
+			"Enabled": true,
+			"BasePlugin": true
 		}
 	]
 }
