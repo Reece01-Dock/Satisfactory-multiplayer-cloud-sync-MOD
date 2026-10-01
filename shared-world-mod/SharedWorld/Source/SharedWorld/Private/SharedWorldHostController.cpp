@@ -8,6 +8,8 @@
 #include "Engine/World.h"
 #include "FGSaveManagerInterface.h"
 #include "FGSaveSystem.h"
+#include "FGGamePhase.h"
+#include "FGGamePhaseManager.h"
 #include "FGPlayerController.h"
 #include "UI/FGGameUI.h"
 #include "GameFramework/GameStateBase.h"
@@ -16,6 +18,7 @@
 #include "GameFramework/PlayerState.h"
 #include "LocalUserInfo.h"
 #include "Misc/CoreMisc.h"
+#include "Misc/Paths.h"
 #include "OnlineIntegrationState.h"
 #include "OnlineIntegrationSubsystem.h"
 #include "SessionInformation.h"
@@ -23,6 +26,7 @@
 #include "SharedWorldGameShims.h"
 #include "SharedWorldSubsystem.h"
 #include "SharedWorldUeConvert.h"
+#include "UnrealClient.h"
 
 using SharedWorldUe::Std;
 
@@ -290,6 +294,29 @@ void USharedWorldHostController::OnSaveComplete(bool bSuccess, const FText& Erro
 	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=save_completed world=%s kind=%d"), *WorldId, static_cast<int32>(SavingKind));
 	if (Session)
 	{
+		// Stamp the live game phase onto the next uploaded revision.
+		FString PhaseName;
+		if (UWorld* W = GameWorld.Get())
+		{
+			if (AFGGamePhaseManager* Phases = AFGGamePhaseManager::Get(W))
+			{
+				if (UFGGamePhase* Current = Phases->GetCurrentGamePhase())
+				{
+					PhaseName = Current->mDisplayName.ToString();
+				}
+			}
+		}
+		if (!PhaseName.IsEmpty())
+		{
+			Session->SetPendingGamePhase(Std(PhaseName));
+		}
+		// Capture a local preview used by the Shared Worlds details pane.
+		{
+			const FString ShotPath = FPaths::Combine(
+				UFGSaveSystem::GetSaveDirectoryPath(),
+				SaveName + TEXT(".png"));
+			FScreenshotRequest::RequestScreenshot(ShotPath, /*bInShowUI=*/false, /*bAddFilenameSuffix=*/false);
+		}
 		Session->OnSaveCompleted(SavingKind);
 	}
 }

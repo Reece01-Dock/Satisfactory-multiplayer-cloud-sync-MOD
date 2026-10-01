@@ -72,6 +72,11 @@ namespace sw
 		std::string ModVersion;
 		/** Optional encoding / object-store locator (absent on legacy revisions). */
 		std::optional<SaveObjectEncoding> SaveObject;
+		/** From FSaveHeader at upload time (absent on legacy revisions). */
+		std::string MapName;
+		std::string MapLabel; // e.g. "Grass Fields" from MapOptions startloc
+		int32_t PlayDurationSeconds = 0;
+		std::string GamePhase; // e.g. "Phase 4" from AFGGamePhaseManager at upload
 
 		/** revisions/0000/00000152-g00000027-3f2a1c9e.json (sharded by thousands). */
 		std::string Path() const;

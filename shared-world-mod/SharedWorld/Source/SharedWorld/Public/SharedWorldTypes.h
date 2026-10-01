@@ -24,6 +24,19 @@ struct FSharedWorldEntryView
 	FString Problem; // set when CloudStatus == UNREACHABLE
 	FString LastPlayed; // "3 hours ago", empty if unknown
 	FString LastHostName;
+	/** Original save name / map label from world.json when known. */
+	FString OriginalSaveName;
+	/** Currently connected session players (lease), display names. */
+	TArray<FString> OnlinePlayerNames;
+	int32 RequiredModCount = 0;
+	int32 MaxPlayers = 4;
+	FString MapName;
+	FString MapLabel; // "Grass Fields"
+	int32 PlayDurationSeconds = 0;
+	FString PlaytimeText; // "87h 22m"
+	FString GamePhase;
+	/** -1 = unknown (not in session / never measured). */
+	int32 PingMs = -1;
 	bool bCreating = false; // being created / verified: not playable yet
 	/** owned = Your Worlds, shared = Shared With You */
 	bool bOwned = true;

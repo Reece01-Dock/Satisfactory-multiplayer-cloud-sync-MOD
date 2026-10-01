@@ -353,6 +353,12 @@ namespace sw
 		Ops.Post([this, FromRevision]() { DoRestore(FromRevision); });
 	}
 
+	void WorldSession::SetPendingGamePhase(std::string Phase)
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		PendingGamePhase = std::move(Phase);
+	}
+
 	// ------------------------------------------------------------ decide
 
 	void WorldSession::DoCheckAndDecide()
@@ -998,6 +1004,10 @@ namespace sw
 		O.GameBuild = Cfg.Versions.GameBuild;
 		O.ModVersion = Cfg.Versions.ModVersion;
 		O.Reason = Kind == SaveKind::Checkpoint ? Reason::Autosave : Kind == SaveKind::Final ? Reason::Final : Reason::Migration;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			O.GamePhase = PendingGamePhase;
+		}
 		ConflictInfo Conflict;
 		const std::string SavePath = file::Join(Cfg.SaveDirectory, Cfg.SaveName + save::Extension);
 		auto Up = Sync->Upload(Tok, SavePath, O, &Conflict);
@@ -1431,7 +1441,29 @@ namespace sw
 		}
 		const WorldState& St = Snap->State;
 		const TimeMs Now = Leases.Store().Clock().Now();
-		if (auto Info = Leases.Store().LoadInfo(Snap->CommitId); Info.Ok()) Sum.Name = Info->Name;
+		if (auto Info = Leases.Store().LoadInfo(Snap->CommitId); Info.Ok())
+		{
+			Sum.Name = Info->Name;
+			Sum.OriginalSaveName = Info->OriginalSaveName;
+			Sum.RequiredModCount = static_cast<int>(Info->RequiredMods.size());
+		}
+		if (auto Settings = Leases.Store().LoadSettings(Snap->CommitId); Settings.Ok())
+		{
+			Sum.MaxPlayers = static_cast<int>(Settings->MaxPlayers > 0 ? Settings->MaxPlayers : 4);
+		}
+		if (St.Head)
+		{
+			Sum.MapName = St.Head->MapName;
+			Sum.MapLabel = St.Head->MapLabel;
+			Sum.PlayDurationSeconds = St.Head->PlayDurationSeconds;
+			Sum.GamePhase = St.Head->GamePhase;
+			// Legacy heads: fill from a cheap header peek of the local synced save when present.
+			if ((Sum.MapLabel.empty() || Sum.PlayDurationSeconds <= 0) && !St.Head->ObjectSha256.empty())
+			{
+				// Local install path is known to SyncEngine; Summarize only has the store.
+				// OriginalSaveName / MapLabel from info already help; header fields land on next upload.
+			}
+		}
 		Sum.Revision = St.HeadNumber();
 		Sum.Generation = St.Generation;
 		Sum.UpdatedAt = St.UpdatedAt;

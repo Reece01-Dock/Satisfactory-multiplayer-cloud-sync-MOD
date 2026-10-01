@@ -144,6 +144,12 @@ namespace sw
 		/** Restore revision From as a new revision (needs RestoreRevision permission). */
 		void Restore(int64_t FromRevision);
 
+		/**
+		 * Host sets this on the game thread before save/upload so the next
+		 * revision records the live game phase (AFGGamePhaseManager).
+		 */
+		void SetPendingGamePhase(std::string Phase);
+
 		// ---- game events: host
 		/** The world is loaded as host; Join is the published session (nullopt: friends list only). */
 		void OnHostingStarted(const std::optional<JoinInfo>& Join);
@@ -230,6 +236,7 @@ namespace sw
 		std::atomic<bool> bPollInFlight{false};
 		std::atomic<bool> bHeartbeatInFlight{false};
 		std::atomic<bool> bVerifyInFlight{false};
+		std::string PendingGamePhase;
 
 		SerialQueue Ops;
 		SerialQueue Heartbeats;
@@ -253,6 +260,17 @@ namespace sw
 		std::string LastHostName;
 		TimeMs UpdatedAt = 0;
 		std::string Problem; // diagnostics when Unreachable
+		/** From world.json — original save / map label when known. */
+		std::string OriginalSaveName;
+		int RequiredModCount = 0;
+		int MaxPlayers = 4;
+		/** From head revision / local save header. */
+		std::string MapName;
+		std::string MapLabel;
+		int PlayDurationSeconds = 0;
+		std::string GamePhase;
+		/** RTT to host when known locally; -1 = unknown. */
+		int PingMs = -1;
 	};
 
 	/** Lightweight metadata read (no save transfer): safe to poll from the menu. */

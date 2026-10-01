@@ -380,8 +380,38 @@ namespace SharedWorldFg
 	void ApplyMenuFont(UTextBlock* Text, int32 Size, bool bBold)
 	{
 		if (!Text) return;
-		UObject* FontObj = LoadFontObj(bBold ? HeeboBoldPath : DescriptionFontPath);
-		if (!FontObj) FontObj = LoadFontObj(bBold ? HeeboBoldPath : HeeboRegularPath);
+		// Cache font objects — RebuildPage creates dozens of text blocks per open.
+		static TWeakObjectPtr<UObject> CachedBold;
+		static TWeakObjectPtr<UObject> CachedDesc;
+		static TWeakObjectPtr<UObject> CachedRegular;
+		UObject* FontObj = nullptr;
+		if (bBold)
+		{
+			FontObj = CachedBold.Get();
+			if (!FontObj)
+			{
+				FontObj = LoadFontObj(HeeboBoldPath);
+				CachedBold = FontObj;
+			}
+		}
+		else
+		{
+			FontObj = CachedDesc.Get();
+			if (!FontObj)
+			{
+				FontObj = LoadFontObj(DescriptionFontPath);
+				CachedDesc = FontObj;
+			}
+			if (!FontObj)
+			{
+				FontObj = CachedRegular.Get();
+				if (!FontObj)
+				{
+					FontObj = LoadFontObj(HeeboRegularPath);
+					CachedRegular = FontObj;
+				}
+			}
+		}
 		if (FontObj)
 		{
 			FSlateFontInfo Info = Text->GetFont();

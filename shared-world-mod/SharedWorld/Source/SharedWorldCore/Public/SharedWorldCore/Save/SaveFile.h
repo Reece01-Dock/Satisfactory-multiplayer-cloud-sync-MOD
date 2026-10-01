@@ -30,6 +30,9 @@ namespace sw::save
 		std::string SessionName;
 		int32_t PlayDurationSeconds = 0;
 		int64_t SaveTicks = 0;
+
+		/** Friendly map label from MapOptions (?startloc=Grass Fields → "Grass Fields"). */
+		std::string MapLabel() const;
 	};
 
 	/** Save stems: [A-Za-z0-9_-]{1,64}, so they can never traverse directories. */
@@ -43,6 +46,15 @@ namespace sw::save
 	Result<SaveHeader> ValidateFile(const std::string& Path);
 	/** Same check on bytes in memory. */
 	Result<SaveHeader> ValidateBytes(const std::string& Bytes);
+
+	/** Header-only peek (no body inflate) — cheap for menu metadata. */
+	Result<SaveHeader> ReadHeaderFile(const std::string& Path);
+	Result<SaveHeader> ReadHeaderBytes(const std::string& Bytes);
+
+	/** Parse ?startloc=… (or startloc=…) from MapOptions. */
+	std::string MapLabelFromOptions(const std::string& MapOptions);
+	/** "87h 22m" / "45m" / "30s". Empty when Seconds <= 0. */
+	std::string FormatPlayDuration(int32_t Seconds);
 
 	/**
 	 * Waits until size and modification time have not changed for Quiet,

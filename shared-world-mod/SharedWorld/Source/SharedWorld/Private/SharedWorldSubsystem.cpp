@@ -18,6 +18,7 @@
 #include "FGSavePlatform.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPluginManager.h"
@@ -30,6 +31,7 @@
 #include "UObject/UObjectIterator.h"
 #include "SharedWorldCore/HostElection/HostElection.h"
 #include "SharedWorldCore/Providers/GitHub.h"
+#include "SharedWorldCore/Save/SaveFile.h"
 #include "SharedWorldCore/World/Creation.h"
 #include "SharedWorldCore/World/Membership.h"
 #include "SharedWorldCredentialStore.h"
@@ -1397,6 +1399,27 @@ bool USharedWorldSubsystem::Tick(float)
 	{
 		Host->PollPauseMenu();
 	}
+	if (!ActiveWorldId.IsEmpty())
+	{
+		if (FSharedWorldRuntime* Runtime = FindRuntime(ActiveWorldId))
+		{
+			if (UGameInstance* GI = GetGameInstance())
+			{
+				if (UWorld* W = GI->GetWorld())
+				{
+					if (APlayerController* PC = GI->GetFirstLocalPlayerController())
+					{
+						if (APlayerState* PS = PC->PlayerState)
+						{
+							const int32 Ping = FMath::Max(0, FMath::RoundToInt(PS->ExactPing));
+							Runtime->LastPingMs = Ping;
+							Runtime->LastSummary.PingMs = Ping;
+						}
+					}
+				}
+			}
+		}
+	}
 	if (Wall - LastPauseInjectAttempt >= 1.0)
 	{
 		LastPauseInjectAttempt = Wall;
@@ -1479,10 +1502,45 @@ namespace
 		V.CloudStatus = ToFString(sw::ToString(Sum.Status));
 		V.HostName = ToFString(Sum.HostName);
 		V.PlayerCount = Sum.Players.size();
+		V.OnlinePlayerNames.Reset();
+		for (const sw::SessionPlayer& P : Sum.Players)
+		{
+			const FString Name = ToFString(P.DisplayName);
+			if (!Name.IsEmpty()) V.OnlinePlayerNames.Add(Name);
+		}
 		V.Revision = Sum.Revision;
 		V.Generation = Sum.Generation;
 		V.Problem = ToFString(Sum.Problem);
 		V.LastHostName = ToFString(Sum.LastHostName);
+		V.OriginalSaveName = ToFString(Sum.OriginalSaveName);
+		V.RequiredModCount = Sum.RequiredModCount;
+		V.MaxPlayers = Sum.MaxPlayers > 0 ? Sum.MaxPlayers : 4;
+		V.MapName = ToFString(Sum.MapName);
+		V.MapLabel = ToFString(Sum.MapLabel);
+		V.PlayDurationSeconds = Sum.PlayDurationSeconds;
+		V.PlaytimeText = ToFString(sw::save::FormatPlayDuration(Sum.PlayDurationSeconds));
+		V.GamePhase = ToFString(Sum.GamePhase);
+		V.PingMs = Sum.PingMs >= 0 ? Sum.PingMs : Runtime.LastPingMs;
+		// Legacy cloud heads (pre-metadata): fill from the local SharedWorld_*.sav header.
+		if ((V.MapLabel.IsEmpty() || V.PlayDurationSeconds <= 0) && Runtime.Session)
+		{
+			const FString LocalSav = FPaths::Combine(
+				ToFString(Runtime.Session->Config().SaveDirectory),
+				ToFString(Runtime.Session->Config().SaveName) + TEXT(".sav"));
+			if (FPaths::FileExists(LocalSav))
+			{
+				if (auto H = sw::save::ReadHeaderFile(Std(LocalSav)); H.Ok())
+				{
+					if (V.MapName.IsEmpty()) V.MapName = ToFString(H->MapName);
+					if (V.MapLabel.IsEmpty()) V.MapLabel = ToFString(H->MapLabel());
+					if (V.PlayDurationSeconds <= 0)
+					{
+						V.PlayDurationSeconds = H->PlayDurationSeconds;
+						V.PlaytimeText = ToFString(sw::save::FormatPlayDuration(H->PlayDurationSeconds));
+					}
+				}
+			}
+		}
 		if (Sum.LastPlayedAt > 0)
 		{
 			const FTimespan Ago = FDateTime::UtcNow() - FDateTime::FromUnixTimestamp(Sum.LastPlayedAt / 1000);
@@ -2753,7 +2811,8 @@ FSharedWorldCreationService& USharedWorldSubsystem::Creation()
 void USharedWorldSubsystem::RequestDiscoveryRefresh()
 {
 	RefreshSummariesAsync();
-	OnChanged.Broadcast();
+	// Avoid an extra OnChanged here — ActivateInMainMenu / Refresh already schedule a UI rebuild,
+	// and RefreshSummariesAsync broadcasts again when cloud data arrives.
 }
 
 TArray<FSharedWorldPendingInviteView> USharedWorldSubsystem::GetPendingInviteViews() const

@@ -113,3 +113,20 @@ SW_TEST(Save_WaitStableWaitsForWriterToFinish)
 	Writer.join();
 	EXPECT_EQ(file::Size(P).Value(), int64_t(8001));
 }
+
+SW_TEST(Save_MapLabelAndPlayDurationFormatting)
+{
+	EXPECT_EQ(save::MapLabelFromOptions("?startloc=Grass Fields"), std::string("Grass Fields"));
+	EXPECT_EQ(save::MapLabelFromOptions("startloc=Rocky Desert&foo=1"), std::string("Rocky Desert"));
+	EXPECT_EQ(save::MapLabelFromOptions("?startloc=Dune%20Desert"), std::string("Dune Desert"));
+	EXPECT_EQ(save::MapLabelFromOptions(""), std::string());
+	EXPECT_EQ(save::FormatPlayDuration(0), std::string());
+	EXPECT_EQ(save::FormatPlayDuration(45), std::string("45s"));
+	EXPECT_EQ(save::FormatPlayDuration(125), std::string("2m"));
+	EXPECT_EQ(save::FormatPlayDuration(87 * 3600 + 22 * 60), std::string("87h 22m"));
+
+	save::SaveHeader H;
+	H.MapOptions = "?startloc=Grass Fields";
+	H.PlayDurationSeconds = 90;
+	EXPECT_EQ(H.MapLabel(), std::string("Grass Fields"));
+}

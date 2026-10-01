@@ -1,5 +1,6 @@
 #include "SharedWorldCore/Model/Model.h"
 
+#include <algorithm>
 #include <cstdio>
 
 #include "SharedWorldCore/Util/Sha256.h"
@@ -158,6 +159,10 @@ namespace sw
 		V.Set("gameBuild", GameBuild);
 		V.Set("modVersion", ModVersion);
 		if (SaveObject) V.Set("saveObject", SaveObject->ToJson());
+		if (!MapName.empty()) V.Set("mapName", MapName);
+		if (!MapLabel.empty()) V.Set("mapLabel", MapLabel);
+		if (PlayDurationSeconds > 0) V.Set("playDurationSeconds", static_cast<int64_t>(PlayDurationSeconds));
+		if (!GamePhase.empty()) V.Set("gamePhase", GamePhase);
 		return V;
 	}
 
@@ -184,6 +189,13 @@ namespace sw
 		{
 			SW_ASSIGN(R.SaveObject, SaveObjectEncoding::FromJson(*SO));
 		}
+		SW_ASSIGN(R.MapName, GetOptionalText(V, "mapName", 128));
+		SW_ASSIGN(R.MapLabel, GetOptionalText(V, "mapLabel", 128));
+		if (auto Play = json::GetOptionalInt(V, "playDurationSeconds"); Play.Ok() && Play->has_value())
+		{
+			R.PlayDurationSeconds = static_cast<int32_t>(std::max<int64_t>(0, **Play));
+		}
+		SW_ASSIGN(R.GamePhase, GetOptionalText(V, "gamePhase", 64));
 		SW_TRY(R.Validate());
 		return R;
 	}

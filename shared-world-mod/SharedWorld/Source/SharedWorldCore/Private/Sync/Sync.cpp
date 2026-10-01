@@ -296,9 +296,11 @@ namespace sw
 		WorldStore& Store = Leases->Store();
 		const Logger& Log = Store.Log();
 		SW_TRY(save::WaitStable(Src, Options.StableQuiet, Options.StableTimeout));
-		if (auto V = save::ValidateFile(Src); !V)
+		save::SaveHeader Header;
 		{
-			return V.Err().Wrap("refusing to upload a file that is not a complete save");
+			auto V = save::ValidateFile(Src);
+			if (!V) return V.Err().Wrap("refusing to upload a file that is not a complete save");
+			Header = *V;
 		}
 		// Private snapshot: the game may keep writing Src; we upload exactly what we hashed.
 		const std::string Staging = file::Join(WorldDir(), "staging");
@@ -308,9 +310,10 @@ namespace sw
 		struct Cleanup { std::string P; ~Cleanup() { (void)file::Remove(P); } } SnapGuard{Snap};
 		file::HashResult H;
 		SW_ASSIGN(H, file::Hash(Snap));
-		if (auto V = save::ValidateFile(Snap); !V)
 		{
-			return V.Err().Wrap("save changed while it was being snapshotted");
+			auto V = save::ValidateFile(Snap);
+			if (!V) return V.Err().Wrap("save changed while it was being snapshotted");
+			Header = *V;
 		}
 
 		auto Preserve = [&](const Error& Cause, int64_t CloudHead) -> Error
@@ -358,6 +361,10 @@ namespace sw
 		Rev.Reason = Options.Reason;
 		Rev.GameBuild = Options.GameBuild;
 		Rev.ModVersion = Options.ModVersion;
+		Rev.MapName = Header.MapName;
+		Rev.MapLabel = Header.MapLabel();
+		Rev.PlayDurationSeconds = Header.PlayDurationSeconds;
+		Rev.GamePhase = Options.GamePhase;
 
 		bool bHas = false;
 		SW_ASSIGN(bHas, ObjectStore->Has(H.Sha256));
@@ -458,6 +465,11 @@ namespace sw
 		Rev.RestoredFrom = From.Number;
 		Rev.GameBuild = From.GameBuild;
 		Rev.ModVersion = From.ModVersion;
+		Rev.MapName = From.MapName;
+		Rev.MapLabel = From.MapLabel;
+		Rev.PlayDurationSeconds = From.PlayDurationSeconds;
+		Rev.GamePhase = From.GamePhase;
+		Rev.SaveObject = From.SaveObject;
 		auto C = Leases->CommitRevision(Token, Rev);
 		if (!C) return C.Err();
 		Leases->Store().Log().Info("RevisionRestored", {{"world", Token.WorldId}, {"revision", std::to_string(Rev.Number)}, {"restored_from", std::to_string(From.Number)}});

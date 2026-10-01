@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 #include <zlib.h>
@@ -246,6 +247,103 @@ namespace sw::save
 		std::string Bytes;
 		SW_ASSIGN(Bytes, file::ReadAll(Path, MaxSaveSize));
 		return ValidateBytes(Bytes);
+	}
+
+	Result<SaveHeader> ReadHeaderBytes(const std::string& Bytes)
+	{
+		if (Bytes.size() < 64)
+		{
+			return Bad("save header truncated");
+		}
+		Reader R{Bytes};
+		return ReadHeader(R);
+	}
+
+	Result<SaveHeader> ReadHeaderFile(const std::string& Path)
+	{
+		// Header is a few KB; only peek the prefix so menu refreshes stay cheap.
+		constexpr size_t HeaderPeek = 64 * 1024;
+#if defined(_MSC_VER)
+		FILE* F = nullptr;
+		if (fopen_s(&F, Path.c_str(), "rb") != 0 || !F)
+#else
+		FILE* F = std::fopen(Path.c_str(), "rb");
+		if (!F)
+#endif
+		{
+			return MakeError(ErrorCode::NotFound, "file not found '" + Path + "'");
+		}
+		std::string Bytes(HeaderPeek, '\0');
+		const size_t N = std::fread(Bytes.data(), 1, HeaderPeek, F);
+		std::fclose(F);
+		if (N < 64) return Bad("save header truncated");
+		Bytes.resize(N);
+		return ReadHeaderBytes(Bytes);
+	}
+
+	std::string MapLabelFromOptions(const std::string& MapOptions)
+	{
+		auto Extract = [&](const char* Key) -> std::string
+		{
+			const std::string Needle = std::string(Key);
+			size_t Pos = MapOptions.find(Needle);
+			if (Pos == std::string::npos) return {};
+			Pos += Needle.size();
+			size_t End = MapOptions.find_first_of("&?", Pos);
+			if (End == std::string::npos) End = MapOptions.size();
+			std::string Out = MapOptions.substr(Pos, End - Pos);
+			for (char& C : Out)
+			{
+				if (C == '+') C = ' ';
+			}
+			// Basic %20 decode for common CSS startloc values.
+			std::string Decoded;
+			for (size_t i = 0; i < Out.size(); ++i)
+			{
+				if (Out[i] == '%' && i + 2 < Out.size())
+				{
+					auto Hex = [](char C) -> int
+					{
+						if (C >= '0' && C <= '9') return C - '0';
+						if (C >= 'a' && C <= 'f') return C - 'a' + 10;
+						if (C >= 'A' && C <= 'F') return C - 'A' + 10;
+						return -1;
+					};
+					const int Hi = Hex(Out[i + 1]), Lo = Hex(Out[i + 2]);
+					if (Hi >= 0 && Lo >= 0)
+					{
+						Decoded.push_back(static_cast<char>((Hi << 4) | Lo));
+						i += 2;
+						continue;
+					}
+				}
+				Decoded.push_back(Out[i]);
+			}
+			return Decoded;
+		};
+		std::string Label = Extract("startloc=");
+		if (Label.empty()) Label = Extract("?startloc=");
+		return Label;
+	}
+
+	std::string SaveHeader::MapLabel() const
+	{
+		return MapLabelFromOptions(MapOptions);
+	}
+
+	std::string FormatPlayDuration(int32_t Seconds)
+	{
+		if (Seconds <= 0) return {};
+		const int32_t H = Seconds / 3600;
+		const int32_t M = (Seconds % 3600) / 60;
+		const int32_t S = Seconds % 60;
+		if (H > 0)
+		{
+			if (M > 0) return std::to_string(H) + "h " + std::to_string(M) + "m";
+			return std::to_string(H) + "h";
+		}
+		if (M > 0) return std::to_string(M) + "m";
+		return std::to_string(S) + "s";
 	}
 
 	Status WaitStable(const std::string& Path, TimeMs Quiet, TimeMs Timeout)

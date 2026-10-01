@@ -114,6 +114,8 @@ namespace sw
 		std::string Reason = Reason::Checkpoint;
 		std::string GameBuild;
 		std::string ModVersion;
+		/** Snapshot from AFGGamePhaseManager at save time (optional). */
+		std::string GamePhase;
 		/** Read the stored object back and hash it (doubles transfer; on by default). */
 		bool bVerifyByReadBack = true;
 		TimeMs StableQuiet = Seconds(3);

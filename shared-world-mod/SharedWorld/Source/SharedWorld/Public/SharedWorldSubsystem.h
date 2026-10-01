@@ -55,6 +55,8 @@ struct FSharedWorldRuntime
 	bool bCreating = false;
 	/** Refreshed on a background thread; read under USharedWorldSubsystem::SummaryMutex. */
 	sw::WorldSummary LastSummary;
+	/** Last measured RTT while in this world (-1 unknown). */
+	int32 LastPingMs = -1;
 #if !UE_BUILD_SHIPPING
 	/** Dev-only injected network / storage faults. */
 	bool bDevStorageDisabled = false;
