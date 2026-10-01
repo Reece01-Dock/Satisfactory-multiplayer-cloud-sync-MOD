@@ -35,8 +35,8 @@ drives the game (load save / join / save) when a session asks. Design:
 | E Sync: safe download/upload, backups, restore-as-new-revision, dedup, offline cache (Races 4–6) | **Done & tested** |
 | F Session engine, host migration (successor reservation), crash recovery (candidate rules) | **Done & tested** |
 | G GitHub provider (Git Data API fast-forward CAS + release-asset objects), device-flow sign-in, membership, local settings | **Done & tested** against a faithful fake GitHub |
-| H UE integration (adapters, subsystem, host/join controllers, panel, chat) | **Written, not compiled** |
-| H2 Native menu UI (main menu entry, browser, Manage Session, migration overlay) | **Written, not compiled** — see `docs/ui-integration.md` |
+| H UE integration (adapters, subsystem, host/join controllers, panel, chat) | **Compiles** (Alpakit Dev / FactoryGameSteam Shipping, 2026-09-30) |
+| H2 Native menu UI (main menu entry, browser, Manage Session; migration status in session menu) | **Compiles** — see `docs/ui-integration.md` |
 | I Runtime validation in game | **Not started** — needs the game |
 
 ## Verified behaviour (154 core tests, `shared-world-mod/core-tests`)
@@ -62,19 +62,17 @@ Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core
 * **Credentials.** Tokens never appear in logs, settings, the repository, or the UI; the object-storage redirect never receives the Authorization header; device flow handles pending / slow_down / denied / expired and hostile replies.
 * **Local settings.** Hostile world ids and paths are rejected; a damaged file is reported (the mod sets it aside instead of overwriting); a file from a newer mod is never overwritten.
 
-## Unreal layer (written, not compiled)
+## Unreal layer (compiles; not yet run in game)
 
 * `SharedWorld.Build.cs` depends on `SharedWorldCore`; the helper executable and IPC client are removed.
 * Adapters: `FSharedWorldHttpClient` (blocking only on core worker threads, bounded wait, completion state survives a timeout), `FSharedWorldLogSink`, `FSharedWorldCredentialStore` (Windows Credential Manager).
-* `USharedWorldSubsystem`: loads `%LOCALAPPDATA%/SatisfactorySharedWorld/settings.json`, one runtime per world, ticks sessions every second, reacts to `READY_TO_HOST` (load save, going to the menu first if needed), `JOIN_READY` (join from the menu), `MIGRATING` (migration save), `LEASE_LOST` / handover (return to menu, old host rejoins as client), host load timeout (5 min). Creation, history, membership and invites run on a background queue. Migration overlay follows `HostMigrationEngine` / session state.
-* **Native menus (H2):** `USharedWorldGameInstanceModule` registers SML WidgetBlueprintHooks on `mMainMenuList` / `mManageSessionList` and runtime-injects after **Join Game** / under Manage Session. Browser, details, session management, and migration/recovery overlays are C++ UMG under `UI/`. Corner overlay disabled as primary UX (`docs/ui-integration.md`).
+* `USharedWorldSubsystem`: loads `%LOCALAPPDATA%/SatisfactorySharedWorld/settings.json`, one runtime per world, ticks sessions every second, reacts to `READY_TO_HOST` (load save, going to the menu first if needed), `JOIN_READY` (join from the menu), `MIGRATING` (migration save), `LEASE_LOST` / handover (return to menu, old host rejoins as client), host load timeout (5 min). Creation, history, membership and invites run on a background queue. Migration status is pushed into the Shared World session menu page from `HostMigrationEngine` / session state (no viewport overlay).
+* **Native menus (H2):** SML-style hooks — stock `Widget_FrontEnd_Button` after Play (Join Game size) + `Widget_SubMenuBackground` page in `mSwitcher` (Join Game panel chrome); C++ browser fills the shell. See `docs/ui-integration.md`.
 * Chat: `/sharedworld status | history | players | save | stop | migrate <player> | allow <player> [role] | remove <player> | open | restrict | granthost <github-user> | log`.
 
 ## Known limitations
 
-* **API audit (2026-09-30):** see `docs/ficsit-api-audit.md` and `docs/ficsit-compatibility.md`. docs.ficsit.app was unreachable, so findings rest on the repo, `docs/research.md` and headers; UE edits from the audit are **not compiled**.
-
-* **Not compiled.** Written against SML 3.12 / UE 5.3 headers that were checked earlier, plus standard engine APIs; expect small compile fixes.
+* **API audit (2026-09-30):** see `docs/ficsit-api-audit.md` and `docs/ficsit-compatibility.md`. docs.ficsit.app was unreachable during the audit; UE audit fixes now **compile** (const-correct `RefreshCloudCache`, session shim, save-path guard, verifier threading, plugin deps in `.uplugin`).
 * **GitHub OAuth client id is empty** (`GitHubClientId` in `SharedWorldSubsystem.cpp`): the project owner must register a GitHub OAuth App with device flow enabled. Until then only folder storage works.
 * **Installed-mod list** is not collected (the SML API was not verified), so worlds record no required mods.
 * **Game build number** is taken from the engine changelist; must be confirmed to match save headers.
@@ -94,12 +92,13 @@ Run under GCC, Clang, ASan+UBSan and TSan on Linux and MSVC on Windows (CI `core
 5. `ClientReturnToMainMenuWithTextReason` returns to Satisfactory's main menu (lease lost / handover / successor).
 6. FHttpModule on worker threads; whether the game's libcurl forwards `Authorization` across a redirect host (the provider does not depend on it, but it must not leak).
 7. Player id format from `GetPreferredUniqueNetId()` / `APlayerState::GetUniqueId()` is identical for the same account on host and clients.
-8. Main menu: Shared Worlds under Join Game; Manage Session → Shared World; migration overlay during planned/crash handoff.
+8. Main menu: Shared Worlds under Join Game; Manage Session → Shared World; migration status on the session page during planned/crash handoff.
 
 ## Next steps
 
-1. Compile in the SML starter project; fix compile errors.
+1. ~~Compile in the SML starter project; fix compile errors.~~ **Done** (2026-09-30).
 2. Register the GitHub OAuth App; set the client id.
-3. Two-PC test (Steam + Epic): create from a save, host, join, checkpoint, stop, crash the host, planned migration, restore.
+3. Two-PC test (Steam + Epic): create from a save, host, join, checkpoint, stop, crash the host, planned migration, restore. Covers Phase I items 1–8 in STATUS.
 4. Verify controller navigation on Shared Worlds entry + browser.
 5. Wire Continue / Load Game Shared-World awareness when last-played id is reliable.
+6. F11 follow-up: keep all FG-widget reflection behind `SharedWorldFg` / `SharedWorldShim` (degrade + log on missing props).

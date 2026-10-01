@@ -48,9 +48,11 @@
 #include "Services/SharedWorldDiscoveryService.h"
 #include "Services/SharedWorldInviteService.h"
 #include "TimerManager.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
 #include "UI/FGUserWidget.h"
 #include "UI/SharedWorldGameInstanceModule.h"
 #include "UI/SharedWorldMigrationOverlay.h"
+#include "UI/SharedWorldSessionWidget.h"
 
 using SharedWorldUe::Std;
 using SharedWorldUe::ToFString;
@@ -207,7 +209,7 @@ void USharedWorldSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
-	Http = std::make_shared<FSharedWorldHttpClient>();
+	Http = std::make_shared<FSharedWorldHttpClient>(ShuttingDown);
 	Credentials = std::make_shared<FSharedWorldCredentialStore>();
 	DiagnosticsSink = std::make_shared<sw::MemoryLogSink>(500);
 	LogSink = std::make_shared<FTeeLogSink>(DiagnosticsSink);
@@ -282,7 +284,7 @@ void USharedWorldSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 			AsyncTask(ENamedThreads::GameThread, [WeakThis, Snap]()
 			{
 				USharedWorldSubsystem* S = WeakThis.Get();
-				if (!S) return;
+				if (!S || S->ShuttingDown->load(std::memory_order_acquire)) return;
 				bool bConnected = false;
 				{
 					FScopeLock Lock(&S->SignInMutex);
@@ -315,19 +317,71 @@ void USharedWorldSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void USharedWorldSubsystem::Deinitialize()
 {
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=subsystem_deinitialize_begin"));
+
+	// Signal first so HttpClient::Send abandons waits without CancelRequest.
+	// Joining workers that CancelRequest into a tearing-down FHttpModule can
+	// hard-lock the machine; soft-abandon + join is the safe exit path.
+	ShuttingDown->store(true, std::memory_order_release);
+	SignInCancel->store(true, std::memory_order_release);
+	if (GitHubAuth)
+	{
+		GitHubAuth->CancelLink();
+	}
+
 	FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+	TickHandle = FTSTicker::FDelegateHandle();
 	FWorldDelegates::OnWorldBeginTearDown.Remove(TearDownHandle);
+	TearDownHandle.Reset();
 	FWorldDelegates::OnWorldInitializedActors.Remove(ActorsInitializedHandle);
-	if (GEngine)
+	ActorsInitializedHandle.Reset();
+	if (GEngine && NetworkFailureHandle.IsValid())
 	{
 		GEngine->OnNetworkFailure().Remove(NetworkFailureHandle);
+		NetworkFailureHandle.Reset();
 	}
-	ShuttingDown->store(true);
+
+	if (Host)
+	{
+		Host->Reset();
+	}
+	if (HostResponder)
+	{
+		HostResponder->Clear();
+	}
+
+	DiscoveryService.Reset();
+	InviteService.Reset();
+	CreationService.Reset();
+
 	if (Background)
 	{
-		Background->Shutdown(); // pending creation/history work is dropped; callbacks check WeakThis
+		Background->Shutdown();
+		Background.Reset();
 	}
-	Runtimes.Empty(); // joins worker threads (WorldSession dtor drains its queues)
+
+	// Joins session worker threads. HTTP Send soft-abandons when ShuttingDown
+	// is set, so this must not CancelRequest into FHttpModule.
+	Runtimes.Empty();
+
+	HideMigrationOverlay();
+	MenuPanel.Reset();
+	MenuWorld.Reset();
+
+	Joiner = nullptr;
+	Host = nullptr;
+	NetworkQuality = nullptr;
+	HostResponder = nullptr;
+
+	// Drop auth/http last — abandoned requests keep themselves alive via the
+	// completion lambda until FHttpModule finishes or the process exits.
+	GitHubAuth.reset();
+	Http.reset();
+	Credentials.reset();
+	LogSink.reset();
+	DiagnosticsSink.reset();
+
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=subsystem_deinitialize_end"));
 	Super::Deinitialize();
 }
 
@@ -630,11 +684,11 @@ FString USharedWorldSubsystem::RequestMigrationTo(const FString& WorldId, const 
 		for (const sw::SessionPlayer& P : Host->GetConnectedPlayers())
 		{
 			if (P.PlayerId == Me.PlayerId) continue;
-			sw::Identity Who;
-			Who.PlayerId = P.PlayerId;
-			Who.DisplayName = P.DisplayName;
-			Who.InstallId = P.InstallId;
-			sw::HostCandidate H = sw::MakeCandidate(Who, Matrix, Online, true, true, true, true, true, true, false);
+			sw::Identity Peer;
+			Peer.PlayerId = P.PlayerId;
+			Peer.DisplayName = P.DisplayName;
+			Peer.InstallId = P.InstallId;
+			sw::HostCandidate H = sw::MakeCandidate(Peer, Matrix, Online, true, true, true, true, true, true, false);
 #if !UE_BUILD_SHIPPING
 			if (Runtime->DevInjectedLatencyMs > 0) H.PingMs += Runtime->DevInjectedLatencyMs;
 #endif
@@ -746,13 +800,26 @@ FString USharedWorldSubsystem::DevInject(const FString& WorldId, const FString& 
 
 void USharedWorldSubsystem::RunInBackground(TFunction<TPair<bool, FString>()> Work, TFunction<void(USharedWorldSubsystem&, bool, const FString&)> Then)
 {
-	TWeakObjectPtr<USharedWorldSubsystem> WeakThis(this);
-	// Work must only capture shared_ptrs and values, never `this`.
-	Background->Post([WeakThis, Work, Then]()
+	if (ShuttingDown->load(std::memory_order_acquire) || !Background)
 	{
-		const TPair<bool, FString> Result = Work();
-		AsyncTask(ENamedThreads::GameThread, [WeakThis, Then, Result]()
+		return;
+	}
+	TWeakObjectPtr<USharedWorldSubsystem> WeakThis(this);
+	std::shared_ptr<std::atomic<bool>> Stop = ShuttingDown;
+	// Work must only capture shared_ptrs and values, never `this`.
+	Background->Post([WeakThis, Work, Then, Stop]()
+	{
+		if (Stop->load(std::memory_order_acquire))
 		{
+			return;
+		}
+		const TPair<bool, FString> Result = Work();
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, Then, Result, Stop]()
+		{
+			if (Stop->load(std::memory_order_acquire))
+			{
+				return;
+			}
 			if (USharedWorldSubsystem* Self = WeakThis.Get())
 			{
 				Then(*Self, Result.Key, Result.Value);
@@ -761,7 +828,7 @@ void USharedWorldSubsystem::RunInBackground(TFunction<TPair<bool, FString>()> Wo
 	});
 }
 
-void USharedWorldSubsystem::RefreshCloudCache(FSharedWorldRuntime& Runtime) const
+void USharedWorldSubsystem::RefreshCloudCache(const FSharedWorldRuntime& Runtime) const
 {
 	constexpr double MinRefreshSeconds = 2.0;
 	if (!Runtime.Leases || !Runtime.CloudCache || !Background)
@@ -1081,12 +1148,12 @@ void USharedWorldSubsystem::BeginGitHubSignIn()
 	std::shared_ptr<std::atomic<bool>> Cancel = SignInCancel;
 	TWeakObjectPtr<USharedWorldSubsystem> WeakThis(this);
 
-	auto PushUi = [WeakThis]()
+	auto PushUi = [WeakThis, Stop]()
 	{
-		AsyncTask(ENamedThreads::GameThread, [WeakThis]()
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, Stop]()
 		{
 			USharedWorldSubsystem* S = WeakThis.Get();
-			if (!S || !S->GitHubAuth) return;
+			if (!S || !S->GitHubAuth || Stop->load(std::memory_order_acquire)) return;
 			const sw::GitHubAuthSnapshot Snap = S->GitHubAuth->Snapshot();
 			bool bConnected = false;
 			{
@@ -1207,6 +1274,10 @@ void USharedWorldSubsystem::TestGitHubAccess(FDone OnDone)
 		AsyncTask(ENamedThreads::GameThread, [WeakThis, R, OnDone = MoveTemp(OnDone)]()
 		{
 			USharedWorldSubsystem* S = WeakThis.Get();
+			if (S && S->ShuttingDown->load(std::memory_order_acquire))
+			{
+				return;
+			}
 			if (S && S->GitHubAuth)
 			{
 				const sw::GitHubAuthSnapshot Snap = S->GitHubAuth->Snapshot();
@@ -1292,6 +1363,10 @@ void USharedWorldSubsystem::SignOutOfGitHub()
 
 bool USharedWorldSubsystem::Tick(float)
 {
+	if (ShuttingDown->load(std::memory_order_acquire))
+	{
+		return false;
+	}
 	const int64 Now = static_cast<int64>(FDateTime::UtcNow().ToUnixTimestamp()) * 1000;
 	for (auto& [Id, Runtime] : Runtimes)
 	{
@@ -1326,8 +1401,6 @@ bool USharedWorldSubsystem::Tick(float)
 		{
 			if (UWorld* World = GI->GetWorld())
 			{
-				// Always re-check while in-game: Manage Session is created/destroyed with the pause UI,
-				// and ActiveWorldId may be empty after teardown / in normal sessions.
 				if (!FPluginModuleLoader::IsMainMenuWorld(World))
 				{
 					for (TObjectIterator<USharedWorldGameInstanceModule> It; It; ++It)
@@ -1625,9 +1698,7 @@ void USharedWorldSubsystem::RetryShowMenuPanel()
 
 bool USharedWorldSubsystem::TryShowMenuPanel(UWorld* World)
 {
-	// Primary UX is the native "Shared Worlds" main-menu entry (WidgetBlueprintHook
-	// + runtime inject after Join Game). The old corner overlay is disabled by
-	// default so the feature does not look disconnected from Satisfactory.
+	// Native menu entry via hook/inject (or local bake). No corner overlay.
 	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
 	if (!PC)
 	{
@@ -1650,28 +1721,35 @@ bool USharedWorldSubsystem::TryShowMenuPanel(UWorld* World)
 			}
 		}
 	}
-	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_ready path=native_entry (overlay disabled)"));
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_ready path=native_entry"));
 	return true;
+}
+
+void USharedWorldSubsystem::PushMigrationStatusToMenus(const FText& Message)
+{
+	UGameInstance* GI = GetGameInstance();
+	UWorld* World = GI ? GI->GetWorld() : nullptr;
+	if (!World) return;
+	TArray<UUserWidget*> Existing;
+	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, Existing, USharedWorldSessionWidget::StaticClass(), false);
+	for (UUserWidget* W : Existing)
+	{
+		if (USharedWorldSessionWidget* Screen = Cast<USharedWorldSessionWidget>(W))
+		{
+			Screen->SetStatusMessage(Message);
+		}
+	}
 }
 
 void USharedWorldSubsystem::EnsureMigrationOverlay(UWorld* World)
 {
-	if (MigrationOverlay.IsValid())
+	// Overlays removed — status goes to Manage Session → Shared World only.
+	(void)World;
+	if (USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get())
 	{
-		if (!MigrationOverlay->IsInViewport())
-		{
-			MigrationOverlay->AddToViewport(9000);
-		}
-		return;
+		Overlay->RemoveFromParent();
+		MigrationOverlay.Reset();
 	}
-	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
-	if (!PC) PC = GetGameInstance() ? GetGameInstance()->GetFirstLocalPlayerController() : nullptr;
-	if (!PC) return;
-	USharedWorldMigrationOverlay* Overlay = CreateWidget<USharedWorldMigrationOverlay>(PC, USharedWorldMigrationOverlay::StaticClass());
-	if (!Overlay) return;
-	Overlay->AddToViewport(9000);
-	Overlay->SetVisibility(ESlateVisibility::Collapsed);
-	MigrationOverlay = Overlay;
 }
 
 namespace
@@ -1895,14 +1973,19 @@ void USharedWorldSubsystem::UpdateMigrationOverlay(const FString& WorldId)
 			View.Message.find("HOST MIGRATION") != std::string::npos ||
 			View.Message.find("Host migration") != std::string::npos);
 
+	auto Publish = [this](const FString& Headline, const FString& Detail)
+	{
+		const FString Key = Headline + TEXT("\n") + Detail;
+		if (Key == LastOverlayMessage) return;
+		LastOverlayMessage = Key;
+		PushMigrationStatusToMenus(FText::FromString(Key.Replace(TEXT("\n"), TEXT(" — "))));
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=migration_status headline=\"%s\" detail=\"%s\""),
+			*Headline, *Detail);
+	};
+
 	// Cloud upload / release — migration handoff uses HOST MIGRATION branding.
 	if (View.State == S::Uploading || View.State == S::Releasing)
 	{
-		UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
-		EnsureMigrationOverlay(World);
-		USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get();
-		if (!Overlay) return;
-
 		if (bPlannedHandoff)
 		{
 			const FString Succ = View.Successor ? ToFString(View.Successor->DisplayName) : TEXT("the next host");
@@ -1910,43 +1993,22 @@ void USharedWorldSubsystem::UpdateMigrationOverlay(const FString& WorldId)
 			const FString Detail = View.State == S::Uploading
 				? FString::Printf(TEXT("Uploading the Shared World, then handing off to %s…"), *Succ)
 				: FString::Printf(TEXT("Handing the host lock to %s…"), *Succ);
-			const FString Key = Headline + TEXT("\n") + Detail;
-			if (Key != LastOverlayMessage)
-			{
-				LastOverlayMessage = Key;
-				Overlay->ShowMigration(FText::FromString(Headline), FText::FromString(Detail));
-			}
-			const FMigrationProgressInfo Prog = ComputeMigrationProgress(*Runtime, View);
-			Overlay->SetMigrationProgress(Prog.Percent, Prog.Step, Prog.bIndeterminate);
+			Publish(Headline, Detail);
 			return;
 		}
 
 		const FString Headline = View.State == S::Uploading
 			? TEXT("UPLOADING SHARED WORLD")
 			: TEXT("RELEASING SHARED WORLD");
-		const FString Detail = ToFString(View.Message);
-		const FString Key = Headline + TEXT("\n") + Detail;
-		if (Key != LastOverlayMessage)
-		{
-			LastOverlayMessage = Key;
-			Overlay->ShowUploading(FText::FromString(Headline), FText::FromString(Detail));
-		}
-		const FMigrationProgressInfo Prog = ComputeMigrationProgress(*Runtime, View);
-		Overlay->SetMigrationProgress(Prog.Percent, Prog.Step, Prog.bIndeterminate || View.State == S::Uploading);
+		Publish(Headline, ToFString(View.Message));
 		return;
 	}
 
 	FString Message;
-	bool bRecovery = false;
 	if (Runtime->HostMigration)
 	{
 		const sw::MigrationDiagnostics& Diag = Runtime->HostMigration->Diagnostics();
 		Message = ToFString(Diag.OverlayMessage);
-		bRecovery = Diag.Phase == sw::MigrationPhase::HostLost ||
-			Diag.Phase == sw::MigrationPhase::RecoveryWait ||
-			Diag.Phase == sw::MigrationPhase::LeaseExpired ||
-			Diag.Phase == sw::MigrationPhase::SuccessorElection ||
-			Diag.Phase == sw::MigrationPhase::RevisionRecovery;
 	}
 	if (Message.IsEmpty())
 	{
@@ -1954,7 +2016,6 @@ void USharedWorldSubsystem::UpdateMigrationOverlay(const FString& WorldId)
 		{
 			const FString Succ = View.Successor ? ToFString(View.Successor->DisplayName) : TEXT("the next host");
 			Message = TEXT("HOST MIGRATION\nSaving and handing the Shared World to ") + Succ + TEXT("…");
-			bRecovery = true;
 		}
 		else if (bClientSeesLeave)
 		{
@@ -1967,34 +2028,28 @@ void USharedWorldSubsystem::UpdateMigrationOverlay(const FString& WorldId)
 			{
 				Message = TEXT("HOST MIGRATION\nHost is leaving — selecting the next host. Stay here.");
 			}
-			bRecovery = true;
 		}
 		else if (View.State == S::Reconnecting || View.State == S::RecoveringHost || View.State == S::JoinRetry ||
 			View.State == S::HostUnreachable)
 		{
 			Message = TEXT("HOST MIGRATION\nSelecting a new host — stay here, the world will continue automatically.");
-			bRecovery = true;
 		}
 		else if (View.State == S::WaitingForHost || View.State == S::WaitingForSession)
 		{
 			Message = TEXT("HOST MIGRATION\n") + ToFString(View.Message);
-			bRecovery = true;
 		}
 		else if (View.State == S::Acquiring || View.State == S::ElectingHost || View.State == S::Recovering ||
 			View.State == S::Downloading)
 		{
 			Message = TEXT("HOST MIGRATION\nYou are becoming the host. Loading the Shared World...");
-			bRecovery = true;
 		}
 		else if (View.State == S::ReadyToHost || View.State == S::StartingSession || View.State == S::PublishingSession)
 		{
 			Message = TEXT("HOST MIGRATION\nStarting your session as the new host...");
-			bRecovery = true;
 		}
 		else if ((View.State == S::JoinReady || View.State == S::Joining) && IsHostMigrationInFlight(WorldId))
 		{
 			Message = TEXT("HOST MIGRATION\nReconnecting to the new host…");
-			bRecovery = true;
 		}
 	}
 	if (Message.IsEmpty())
@@ -2006,42 +2061,24 @@ void USharedWorldSubsystem::UpdateMigrationOverlay(const FString& WorldId)
 			HideMigrationOverlay();
 			return;
 		}
-		// Transitioned back to a quiet state: brief CONNECTED then hide.
-		if (USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get())
+		FString HostName = ToFString(View.HostName);
+		if (HostName.IsEmpty() && Runtime->HostMigration)
 		{
-			FString HostName = ToFString(View.HostName);
-			if (HostName.IsEmpty() && Runtime->HostMigration)
-			{
-				HostName = ToFString(Runtime->HostMigration->Diagnostics().CurrentHost.DisplayName);
-			}
-			if (HostName.IsEmpty()) HostName = TEXT("the new host");
-			Overlay->ShowConnected(FText::FromString(HostName));
+			HostName = ToFString(Runtime->HostMigration->Diagnostics().CurrentHost.DisplayName);
 		}
+		if (HostName.IsEmpty()) HostName = TEXT("the new host");
+		Publish(TEXT("CONNECTED"), FString::Printf(TEXT("Joined %s"), *HostName));
 		LastOverlayMessage.Reset();
 		return;
 	}
 
-	UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
-	EnsureMigrationOverlay(World);
-	USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get();
-	if (!Overlay) return;
-
-	if (Message != LastOverlayMessage)
+	FString Headline, Detail;
+	if (!Message.Split(TEXT("\n"), &Headline, &Detail))
 	{
-		LastOverlayMessage = Message;
-		FString Headline, Detail;
-		if (!Message.Split(TEXT("\n"), &Headline, &Detail))
-		{
-			Headline = Message;
-			Detail = ToFString(View.Message);
-		}
-		if (bRecovery) Overlay->ShowRecovery(FText::FromString(Headline), FText::FromString(Detail));
-		else Overlay->ShowMigration(FText::FromString(Headline), FText::FromString(Detail));
+		Headline = Message;
+		Detail = ToFString(View.Message);
 	}
-
-	// Always refresh the bar so lease-wait countdown / stage fill keep moving.
-	const FMigrationProgressInfo Prog = ComputeMigrationProgress(*Runtime, View);
-	Overlay->SetMigrationProgress(Prog.Percent, Prog.Step, Prog.bIndeterminate);
+	Publish(Headline, Detail);
 }
 
 void USharedWorldSubsystem::HideMigrationOverlay()
@@ -2049,7 +2086,7 @@ void USharedWorldSubsystem::HideMigrationOverlay()
 	LastOverlayMessage.Reset();
 	if (USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get())
 	{
-		Overlay->HideOverlay();
+		Overlay->RemoveFromParent();
 	}
 	MigrationOverlay.Reset();
 }
@@ -2137,8 +2174,7 @@ void USharedWorldSubsystem::OnMenuWorldReady(UWorld* World)
 	}
 	if (bUploading || bHostMigrationInFlight)
 	{
-		// MW2-style: stay on a full-screen HOST MIGRATION card over the menu —
-		// session keeps ticking and will BeginHosting / Join when ready.
+		// Status shows in Manage Session → Shared World (no viewport overlay).
 		EnsureMigrationOverlay(World);
 		UpdateMigrationOverlay(ActiveWorldId);
 	}
@@ -2183,17 +2219,6 @@ void USharedWorldSubsystem::OnGameWorldReady(UWorld* World)
 		return;
 	}
 	EnsureMigrationOverlay(World);
-	if (UGameInstance* GI = GetGameInstance())
-	{
-		for (TObjectIterator<USharedWorldGameInstanceModule> It; It; ++It)
-		{
-			if (It->GetGameInstance() == GI)
-			{
-				It->TryEnsureMenuEntries(World);
-				break;
-			}
-		}
-	}
 	FSharedWorldRuntime* Runtime = FindRuntime(ActiveWorldId);
 	if (!Runtime || !Runtime->Session)
 	{
@@ -2239,18 +2264,9 @@ void USharedWorldSubsystem::OnWorldBeginTearDown(UWorld* World)
 				}
 				else if (St == sw::SessionState::Joined)
 				{
-					// MW2-style: treat disconnect as host loss and keep recovering
-					// through the menu under the HOST MIGRATION overlay (not a cold Leave).
-					EnsureMigrationOverlay(World);
-					if (USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get())
-					{
-						Overlay->ShowRecovery(
-							NSLOCTEXT("SharedWorld", "HostMigTitle", "HOST MIGRATION"),
-							NSLOCTEXT("SharedWorld", "HostMigDetail", "Selecting a new host — stay here, the world will continue automatically."));
-						Overlay->SetMigrationProgress(0.08f,
-							NSLOCTEXT("SharedWorld", "MigStepLost", "Host connection lost"), false);
-					}
 					LastOverlayMessage = TEXT("HOST MIGRATION\nSelecting a new host — stay here, the world will continue automatically.");
+					PushMigrationStatusToMenus(FText::FromString(
+						TEXT("HOST MIGRATION — Selecting a new host — stay here, the world will continue automatically.")));
 					if (Runtime->HostMigration)
 					{
 						(void)Runtime->HostMigration->OnHostLost();
@@ -2277,16 +2293,9 @@ void USharedWorldSubsystem::OnNetworkFailure(UWorld* World, UNetDriver*, ENetwor
 	const sw::SessionState State = Runtime->Session->View().State;
 	if (State == sw::SessionState::Joined)
 	{
-		EnsureMigrationOverlay(World);
-		if (USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get())
-		{
-			Overlay->ShowRecovery(
-				NSLOCTEXT("SharedWorld", "HostMigTitle", "HOST MIGRATION"),
-				NSLOCTEXT("SharedWorld", "HostMigDetail", "Selecting a new host — stay here, the world will continue automatically."));
-			Overlay->SetMigrationProgress(0.08f,
-				NSLOCTEXT("SharedWorld", "MigStepLost", "Host connection lost"), false);
-		}
 		LastOverlayMessage = TEXT("HOST MIGRATION\nSelecting a new host — stay here, the world will continue automatically.");
+		PushMigrationStatusToMenus(FText::FromString(
+			TEXT("HOST MIGRATION — Selecting a new host — stay here, the world will continue automatically.")));
 		if (Runtime->HostMigration)
 		{
 			(void)Runtime->HostMigration->OnHostLost();
@@ -2295,17 +2304,9 @@ void USharedWorldSubsystem::OnNetworkFailure(UWorld* World, UNetDriver*, ENetwor
 	}
 	else if (State == sw::SessionState::Joining || State == sw::SessionState::JoinReady || State == sw::SessionState::HostVerified)
 	{
-		// Crashed host: Steam session may still "verify" briefly, then join fails.
-		EnsureMigrationOverlay(World ? World : MenuWorld.Get());
-		if (USharedWorldMigrationOverlay* Overlay = MigrationOverlay.Get())
-		{
-			Overlay->ShowRecovery(
-				NSLOCTEXT("SharedWorld", "HostMigTitle", "HOST MIGRATION"),
-				NSLOCTEXT("SharedWorld", "HostMigWait", "Former host is gone — waiting to take over automatically."));
-			Overlay->SetMigrationProgress(0.12f,
-				NSLOCTEXT("SharedWorld", "MigStepWait", "Waiting for former host lock"), false);
-		}
 		LastOverlayMessage = TEXT("HOST MIGRATION\nFormer host is gone — waiting to take over automatically.");
+		PushMigrationStatusToMenus(FText::FromString(
+			TEXT("HOST MIGRATION — Former host is gone — waiting to take over automatically.")));
 		Runtime->Session->OnJoinFailed(ErrorString.IsEmpty() ? std::string("network failure while joining") : Std(ErrorString));
 	}
 }

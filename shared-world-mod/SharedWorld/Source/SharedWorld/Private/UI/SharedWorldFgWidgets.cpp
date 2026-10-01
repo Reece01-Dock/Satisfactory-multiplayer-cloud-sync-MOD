@@ -200,6 +200,16 @@ namespace SharedWorldFg
 		}
 	}
 
+	bool GetBoolProp(UObject* Obj, FName Name, bool Default)
+	{
+		if (!Obj) return Default;
+		if (FBoolProperty* P = FindFProperty<FBoolProperty>(Obj->GetClass(), Name))
+		{
+			return P->GetPropertyValue_InContainer(Obj);
+		}
+		return Default;
+	}
+
 	void SetObjectProp(UObject* Obj, FName Name, UObject* Value)
 	{
 		if (!Obj) return;
@@ -234,6 +244,58 @@ namespace SharedWorldFg
 			FParams P{Text};
 			Obj->ProcessEvent(Fn, &P);
 		}
+	}
+
+	UObject* GetObjectProp(UObject* Obj, FName Name)
+	{
+		if (!Obj) return nullptr;
+		if (FObjectPropertyBase* P = FindFProperty<FObjectPropertyBase>(Obj->GetClass(), Name))
+		{
+			return P->GetObjectPropertyValue_InContainer(Obj);
+		}
+		return nullptr;
+	}
+
+	FText GetTextProp(UObject* Obj, FName Name)
+	{
+		if (!Obj) return FText::GetEmpty();
+		if (FTextProperty* P = FindFProperty<FTextProperty>(Obj->GetClass(), Name))
+		{
+			return P->GetPropertyValue_InContainer(Obj);
+		}
+		return FText::GetEmpty();
+	}
+
+	UPanelWidget* FindNamedPanel(UUserWidget* Root, FName Name)
+	{
+		return Cast<UPanelWidget>(FindNamedWidget(Root, Name));
+	}
+
+	UWidget* FindNamedWidget(UUserWidget* Root, FName Name)
+	{
+		if (!Root) return nullptr;
+		if (Root->WidgetTree)
+		{
+			if (UWidget* W = Root->WidgetTree->FindWidget(Name)) return W;
+		}
+		if (UObject* Obj = GetObjectProp(Root, Name))
+		{
+			if (UWidget* W = Cast<UWidget>(Obj)) return W;
+		}
+		if (Root->WidgetTree)
+		{
+			TArray<UWidget*> All;
+			Root->WidgetTree->GetAllWidgets(All);
+			const FString Prefix = Name.ToString();
+			for (UWidget* W : All)
+			{
+				if (W && W->GetFName().ToString().StartsWith(Prefix))
+				{
+					return W;
+				}
+			}
+		}
+		return nullptr;
 	}
 
 	void ApplyMenuFont(UTextBlock* Text, int32 Size, bool bBold)
@@ -301,6 +363,41 @@ namespace SharedWorldFg
 		Bg->SetVisibility(ESlateVisibility::Visible);
 		EnsureConstructed(Bg);
 		return Bg;
+	}
+
+	bool FillSubMenuContent(UUserWidget* SubMenuBackground, UWidget* Content)
+	{
+		if (!SubMenuBackground || !Content) return false;
+		EnsureConstructed(SubMenuBackground);
+		SetBoolProp(SubMenuBackground, TEXT("mShowBackground"), true);
+		CallBoolSetter(SubMenuBackground, TEXT("SetShowBackground"), true);
+
+		bool bPlaced = CallOverwritePanel(SubMenuBackground, Content);
+		if (!bPlaced)
+		{
+			bPlaced = PlaceIntoSlot(ResolveContentSlot(SubMenuBackground), Content);
+		}
+		if (!bPlaced && SubMenuBackground->WidgetTree)
+		{
+			TArray<UWidget*> All;
+			SubMenuBackground->WidgetTree->GetAllWidgets(All);
+			for (UWidget* W : All)
+			{
+				if (Cast<UNamedSlot>(W) || Cast<UContentWidget>(W))
+				{
+					if (PlaceIntoSlot(W, Content))
+					{
+						bPlaced = true;
+						break;
+					}
+				}
+			}
+		}
+		SubMenuBackground->SetVisibility(ESlateVisibility::Visible);
+		Content->SetVisibility(ESlateVisibility::Visible);
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=submenu_fill placed=%d shell=%s"),
+			bPlaced ? 1 : 0, *SubMenuBackground->GetName());
+		return bPlaced;
 	}
 
 	void SetFrontEndTitle(UUserWidget* Button, const FText& Title)

@@ -9,6 +9,7 @@ class UTextBlock;
 class UPanelWidget;
 class UNamedSlot;
 class USizeBox;
+class UWidget;
 
 namespace SharedWorldFg
 {
@@ -39,6 +40,9 @@ namespace SharedWorldFg
 	/** Create Widget_SubMenuBackground and place Content into its mContent slot (SML ModList). */
 	UUserWidget* WrapInSubMenuBackground(UUserWidget* Outer, UWidget* Content);
 
+	/** Place Content into an existing Widget_SubMenuBackground (baked SharedWorldsBrowser / SharedWorldSession). */
+	bool FillSubMenuContent(UUserWidget* SubMenuBackground, UWidget* Content);
+
 	/** Create a FrontEnd list row sized like Join Game submenu entries. */
 	UUserWidget* CreateFrontEndRow(UUserWidget* Outer, const FText& Title, bool bBig);
 
@@ -58,7 +62,15 @@ namespace SharedWorldFg
 	void BindFrontEndClicked(UUserWidget* Button, UObject* Receiver, FName FuncName);
 	void BindStandardClicked(UUserWidget* Button, UObject* Receiver, FName FuncName);
 	void SetBoolProp(UObject* Obj, FName Name, bool Value);
+	bool GetBoolProp(UObject* Obj, FName Name, bool Default = false);
 	void SetObjectProp(UObject* Obj, FName Name, UObject* Value);
 	void SetTextProp(UObject* Obj, FName Name, const FText& Value);
 	void CallSetText(UObject* Obj, const FText& Text);
+
+	/** Reflected FG-widget reads. Missing props return null / empty and never crash (F11). */
+	UObject* GetObjectProp(UObject* Obj, FName Name);
+	FText GetTextProp(UObject* Obj, FName Name);
+	/** WidgetTree name first, then reflected object property (e.g. mMainMenuList). */
+	UPanelWidget* FindNamedPanel(UUserWidget* Root, FName Name);
+	UWidget* FindNamedWidget(UUserWidget* Root, FName Name);
 }

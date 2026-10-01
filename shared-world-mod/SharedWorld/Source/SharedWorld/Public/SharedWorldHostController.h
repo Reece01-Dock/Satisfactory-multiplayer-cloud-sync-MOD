@@ -58,6 +58,9 @@ public:
 	/** The session reached IDLE for this world: release everything held for it. */
 	void NotifyReleased() { Reset(); }
 
+	/** Drop tickers / invite bridge / state (also used on subsystem teardown). */
+	void Reset();
+
 	/** Currently connected players, best-effort identity (InstallId is only known for this machine's own player). */
 	std::vector<sw::SessionPlayer> GetConnectedPlayers() const;
 
@@ -69,8 +72,6 @@ private:
 	bool TickCheckpoint(float);
 	FString FindOnlineSessionId() const;
 	void PublishSession(const FString& SessionId);
-	void Reset();
-
 	UFUNCTION()
 	void OnSaveComplete(bool bSuccess, const FText& ErrorMessage);
 

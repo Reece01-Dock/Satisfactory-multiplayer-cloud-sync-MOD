@@ -29,6 +29,26 @@
 			"Name": "SML",
 			"Enabled": true,
 			"SemVersion": "^3.12.0"
+		},
+		{
+			"Name": "OnlineIntegration",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineServices",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystem",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystemUtils",
+			"Enabled": true
+		},
+		{
+			"Name": "ModelViewViewModel",
+			"Enabled": true
 		}
 	]
 }

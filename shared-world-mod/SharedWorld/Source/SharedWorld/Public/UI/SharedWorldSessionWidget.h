@@ -12,7 +12,7 @@ class UVerticalBox;
 class USharedWorldSubsystem;
 class USharedWorldInviteRowBinder;
 
-UCLASS()
+UCLASS(Blueprintable)
 class SHAREDWORLD_API USharedWorldSessionWidget : public UUserWidget
 {
 	GENERATED_BODY()
@@ -24,6 +24,9 @@ public:
 	virtual void NativeDestruct() override;
 
 	UFUNCTION() void Close();
+
+	/** Status line for host migration / sync (shown in Manage Session → Shared World). */
+	void SetStatusMessage(const FText& Message);
 
 	/** Called by invite row binders (in-session players or Steam friends). */
 	void InvitePlayer(const FString& WorldId, const FString& PlayerId, const FString& DisplayName);

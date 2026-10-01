@@ -137,10 +137,12 @@ Original personal saves are never opened for writing here; the runtime save is a
 | P0 | F4 save-path guard | fixed |
 | P0 | F5 core build red | fixed |
 | P1 | F3 session-definition shim | isolated + validated |
-| P1 | UI reflection (F11), `Start()` semantics, session-id round trip | needs game/headers |
+| P1 | UI reflection (F11) | routed through `SharedWorldFg` getters/setters + `SharedWorldShim`; degrade on missing props |
+| P1 | `Start()` semantics, session-id round trip | needs game |
 | P2 | F9 | fixed |
 | P2 | F6/F7/F8 | documented; need core `LinkSample` change, settings, header access |
 | P3 | Log categories, SML config | deferred |
+| — | UE module compile | **done** 2026-09-30 (Alpakit Dev / FactoryGameSteam Shipping) |
 
 ## 5. Packaging / dependencies
 

@@ -14,7 +14,7 @@ class UVerticalBox;
 class UWidgetSwitcher;
 class USharedWorldSubsystem;
 
-UCLASS()
+UCLASS(Blueprintable)
 class SHAREDWORLD_API USharedWorldBrowserWidget : public UUserWidget
 {
 	GENERATED_BODY()

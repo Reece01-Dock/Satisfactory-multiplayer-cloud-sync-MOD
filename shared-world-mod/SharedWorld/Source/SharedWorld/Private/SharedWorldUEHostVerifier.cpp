@@ -8,6 +8,7 @@
 #include "CommonSessionSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "LocalUserInfo.h"
+#include "Misc/CoreMisc.h"
 #include "OnlineIntegrationState.h"
 #include "OnlineIntegrationSubsystem.h"
 #include "SessionInformation.h"
@@ -148,12 +149,21 @@ namespace SharedWorldUe
 		});
 
 		const auto Wait = Timeout > 0 ? std::chrono::milliseconds(Timeout) : std::chrono::milliseconds(5000);
-		if (Future.wait_for(Wait) != std::future_status::ready)
+		const auto Deadline = clock::now() + Wait;
+		for (;;)
 		{
-			Result.Outcome = sw::HostVerifyOutcome::Timeout;
-			Result.Detail = "timed_out";
-			LogResult(TEXT("TimedOut"));
-			return Result;
+			if (Future.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready)
+			{
+				break;
+			}
+			// Game-thread resolve cannot run while Deinitialize joins this worker.
+			if (IsEngineExitRequested() || clock::now() >= Deadline)
+			{
+				Result.Outcome = sw::HostVerifyOutcome::Timeout;
+				Result.Detail = IsEngineExitRequested() ? "engine_exit" : "timed_out";
+				LogResult(TEXT("TimedOut"));
+				return Result;
+			}
 		}
 		FStageOne Stage = Future.get();
 		switch (Stage.Kind)

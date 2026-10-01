@@ -10,6 +10,7 @@
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
+#include "Components/WidgetSwitcher.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "HAL/PlatformApplicationMisc.h"
@@ -186,8 +187,31 @@ USharedWorldSubsystem* USharedWorldSessionWidget::SW() const
 	return GI ? GI->GetSubsystem<USharedWorldSubsystem>() : nullptr;
 }
 
-void USharedWorldSessionWidget::Close() { RemoveFromParent(); }
+void USharedWorldSessionWidget::Close()
+{
+	// Baked Manage Session page — never RemoveFromParent. Return to the first switcher page.
+	for (UWidget* It = this; It; It = It->GetParent())
+	{
+		if (UWidgetSwitcher* Sw = Cast<UWidgetSwitcher>(It->GetParent()))
+		{
+			if (Sw->GetChildrenCount() > 0)
+			{
+				Sw->SetActiveWidgetIndex(0);
+			}
+			return;
+		}
+	}
+}
 void USharedWorldSessionWidget::OnBack() { Close(); }
+
+void USharedWorldSessionWidget::SetStatusMessage(const FText& Message)
+{
+	if (FlashText)
+	{
+		FlashText->SetColorAndOpacity(FSlateColor(TextMuted));
+		FlashText->SetText(Message);
+	}
+}
 
 void USharedWorldSessionWidget::Refresh()
 {

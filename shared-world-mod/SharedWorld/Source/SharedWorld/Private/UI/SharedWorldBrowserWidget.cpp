@@ -6,6 +6,7 @@
 #include "Components/EditableTextBox.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/PanelWidget.h"
 #include "Components/ScrollBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
@@ -96,10 +97,7 @@ UWidgetSwitcher* USharedWorldBrowserWidget::FindSwitcher(UUserWidget* MainMenuRo
 		{
 			if (UWidgetSwitcher* S = Cast<UWidgetSwitcher>(MainMenuRoot->WidgetTree->FindWidget(N))) return S;
 		}
-		if (FObjectProperty* OP = FindFProperty<FObjectProperty>(MainMenuRoot->GetClass(), N))
-		{
-			if (UWidgetSwitcher* S = Cast<UWidgetSwitcher>(OP->GetObjectPropertyValue_InContainer(MainMenuRoot))) return S;
-		}
+		if (UWidgetSwitcher* S = Cast<UWidgetSwitcher>(SharedWorldFg::GetObjectProp(MainMenuRoot, N))) return S;
 	}
 	if (MainMenuRoot->WidgetTree)
 	{
@@ -115,66 +113,98 @@ UWidgetSwitcher* USharedWorldBrowserWidget::FindSwitcher(UUserWidget* MainMenuRo
 
 void USharedWorldBrowserWidget::ActivateInMainMenu(UUserWidget* MainMenuRoot)
 {
+	// Prefer baked SharedWorldsBrowser (SubMenuBackground in mSwitcher) — same idea as
+	// ModsButton_SML → ModList_SML. Fall back to wrapping into the switcher at runtime.
 	UWidgetSwitcher* Switcher = FindSwitcher(MainMenuRoot);
 	UWidget* SwitcherChild = this;
 
-	// SML Widget_ModList: parent BP_MenuBase with UsesSubmenuBackground embeds
-	// Widget_SubMenuBackground. We wrap the same way at activate time.
-	if (!SubMenuShell)
+	UUserWidget* BakedShell = nullptr;
+	if (MainMenuRoot)
 	{
-		SubMenuShell = SharedWorldFg::WrapInSubMenuBackground(MainMenuRoot ? MainMenuRoot : this, this);
+		if (UWidget* Named = SharedWorldFg::FindNamedWidget(MainMenuRoot, TEXT("SharedWorldsBrowser")))
+		{
+			BakedShell = Cast<UUserWidget>(Named);
+		}
 	}
-	if (SubMenuShell)
+
+	if (BakedShell)
 	{
-		SwitcherChild = SubMenuShell;
-		SharedWorldFg::SetBoolProp(this, TEXT("UsesSubmenuBackground"), true);
-		SharedWorldFg::SetBoolProp(SubMenuShell, TEXT("mShowBackground"), true);
+		// Hooked page may already BE the C++ browser (SML ModList pattern).
+		if (Cast<USharedWorldBrowserWidget>(BakedShell))
+		{
+			SwitcherChild = BakedShell;
+		}
+		else
+		{
+			SharedWorldFg::FillSubMenuContent(BakedShell, this);
+			SwitcherChild = BakedShell;
+		}
 	}
 	else
 	{
-		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=submenu_wrap_failed fallback=raw_browser"));
+		UWidget* ExistingChild = this;
+		for (UWidget* P = GetParent(); P; P = P->GetParent())
+		{
+			if (P == Switcher)
+			{
+				break;
+			}
+			ExistingChild = P;
+		}
+		const bool bAlreadyInSwitcher = Switcher && ExistingChild->GetParent() == Switcher;
+		if (bAlreadyInSwitcher)
+		{
+			SwitcherChild = ExistingChild;
+		}
+		else
+		{
+			if (!SubMenuShell)
+			{
+				SubMenuShell = SharedWorldFg::WrapInSubMenuBackground(MainMenuRoot ? MainMenuRoot : this, this);
+			}
+			if (SubMenuShell)
+			{
+				SwitcherChild = SubMenuShell;
+			}
+		}
 	}
 
 	if (!Switcher)
 	{
-		if (UUserWidget* UW = Cast<UUserWidget>(SwitcherChild))
-		{
-			UW->AddToViewport(200);
-			UW->SetAnchorsInViewport(FAnchors(0.f, 0.12f, 0.55f, 0.92f));
-			UW->SetAlignmentInViewport(FVector2D(0.f, 0.f));
-			UW->SetPositionInViewport(FVector2D(340.f, 40.f), false);
-		}
-		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=browser_no_switcher fallback=viewport submenu=%d"), SubMenuShell ? 1 : 0);
+		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=browser_no_switcher"));
+		return;
 	}
-	else
-	{
-		if (SwitcherChild->GetParent() != Switcher)
-		{
-			SwitcherChild->RemoveFromParent();
-			Switcher->AddChild(SwitcherChild);
-		}
-		Switcher->SetActiveWidget(SwitcherChild);
 
-		// Wire the Shared Worlds FrontEnd button like Mods does (mSwitcherWidget).
-		if (MainMenuRoot)
-		{
-			if (UWidget* Btn = MainMenuRoot->WidgetTree
-				? MainMenuRoot->WidgetTree->FindWidget(TEXT("mButtonSharedWorlds"))
-				: nullptr)
-			{
-				SharedWorldFg::SetObjectProp(Btn, TEXT("mSwitcherWidget"), SwitcherChild);
-				SharedWorldFg::SetObjectProp(Btn, TEXT("mSwitcher"), Switcher);
-			}
-		}
-		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=browser_activated_in_switcher submenu=%d"), SubMenuShell ? 1 : 0);
+	if (SwitcherChild->GetParent() != Switcher)
+	{
+		SwitcherChild->RemoveFromParent();
+		Switcher->AddChild(SwitcherChild);
 	}
+	Switcher->SetActiveWidget(SwitcherChild);
+
 	SetVisibility(ESlateVisibility::Visible);
+	if (BakedShell) BakedShell->SetVisibility(ESlateVisibility::Visible);
 	if (SubMenuShell) SubMenuShell->SetVisibility(ESlateVisibility::Visible);
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=browser_activated_in_switcher baked=%d"), BakedShell ? 1 : 0);
 	if (USharedWorldSubsystem* S = SW()) S->Discovery().BeginRefresh();
 	RebuildPage();
 }
 
-void USharedWorldBrowserWidget::Close() { RemoveFromParent(); }
+void USharedWorldBrowserWidget::Close()
+{
+	// Baked menu page — never RemoveFromParent. Return to the first switcher page.
+	for (UWidget* It = this; It; It = It->GetParent())
+	{
+		if (UWidgetSwitcher* Sw = Cast<UWidgetSwitcher>(It->GetParent()))
+		{
+			if (Sw->GetChildrenCount() > 0)
+			{
+				Sw->SetActiveWidgetIndex(0);
+			}
+			return;
+		}
+	}
+}
 void USharedWorldBrowserWidget::ShowMain() { Page = EPage::Main; RebuildPage(); }
 void USharedWorldBrowserWidget::ShowCreateWizard() { Page = EPage::CreateChoice; RebuildPage(); }
 void USharedWorldBrowserWidget::ShowJoinFriend() { Page = EPage::JoinFriend; RebuildPage(); }
@@ -887,12 +917,24 @@ void USharedWorldBrowserWidget::OnPlaySelected()
 void USharedWorldBrowserWidget::OnDetailsSelected()
 {
 	if (SelectedWorldId.IsEmpty()) return;
+	// Stay inside the browser menu page — no viewport overlay.
+	Page = EPage::Main;
 	if (APlayerController* PC = GetOwningPlayer())
 	{
 		if (USharedWorldDetailsWidget* D = CreateWidget<USharedWorldDetailsWidget>(PC, USharedWorldDetailsWidget::StaticClass()))
 		{
 			D->OpenForWorld(SelectedWorldId);
-			D->AddToViewport(550);
+			if (UPanelWidget* Root = Cast<UPanelWidget>(GetRootWidget()))
+			{
+				Root->AddChild(D);
+			}
+			else if (WidgetTree && WidgetTree->RootWidget)
+			{
+				if (UPanelWidget* Panel = Cast<UPanelWidget>(WidgetTree->RootWidget))
+				{
+					Panel->AddChild(D);
+				}
+			}
 		}
 	}
 }

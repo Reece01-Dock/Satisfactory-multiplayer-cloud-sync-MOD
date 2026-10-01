@@ -5,9 +5,11 @@
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBoxSlot.h"
+#include "Engine/GameInstance.h"
 #include "SharedWorldTypes.h"
-#include "UI/SharedWorldSessionWidget.h"
+#include "UI/SharedWorldGameInstanceModule.h"
 #include "UI/SharedWorldUiStyle.h"
+#include "UObject/UObjectIterator.h"
 
 using namespace SharedWorldUi;
 
@@ -47,13 +49,16 @@ void USharedWorldSessionMenuButton::NativeConstruct()
 void USharedWorldSessionMenuButton::OnClicked()
 {
 	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=pause_shared_world_clicked"));
-	APlayerController* PC = GetOwningPlayer();
-	if (!PC) return;
-
-	USharedWorldSessionWidget* Screen = CreateWidget<USharedWorldSessionWidget>(PC, USharedWorldSessionWidget::StaticClass());
-	if (Screen)
+	if (UGameInstance* GI = GetGameInstance())
 	{
-		Screen->AddToViewport(20000);
-		Screen->SetVisibility(ESlateVisibility::Visible);
+		for (TObjectIterator<USharedWorldGameInstanceModule> It; It; ++It)
+		{
+			if (It->GetGameInstance() == GI)
+			{
+				It->OpenSharedWorldSession();
+				return;
+			}
+		}
 	}
+	UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=session_open_fail reason=\"no game instance module\""));
 }

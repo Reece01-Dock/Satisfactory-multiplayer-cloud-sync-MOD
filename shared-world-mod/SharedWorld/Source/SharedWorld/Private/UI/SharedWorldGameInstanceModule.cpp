@@ -1,11 +1,13 @@
 #include "UI/SharedWorldGameInstanceModule.h"
 
 #include "Blueprint/UserWidget.h"
-#include "Blueprint/WidgetTree.h"
+#include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
+#include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
-#include "Components/TextBlock.h"
+#include "Components/SizeBox.h"
 #include "Components/VerticalBoxSlot.h"
+#include "Components/WidgetSwitcher.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "FGMainMenuHUD.h"
@@ -18,20 +20,159 @@
 #include "UI/SharedWorldNativeMenu.h"
 #include "UI/SharedWorldSessionMenuButton.h"
 #include "UI/SharedWorldSessionWidget.h"
-#include "UObject/UnrealType.h"
+
+namespace
+{
+	const TCHAR* MainMenuClassPath =
+		TEXT("/Game/FactoryGame/Interface/UI/Menu/MainMenu/BP_MainMenuWidget.BP_MainMenuWidget_C");
+	const TCHAR* ManageSessionClassPath =
+		TEXT("/Game/FactoryGame/Interface/UI/Menu/Widget_ManageSession.Widget_ManageSession_C");
+	const TCHAR* FrontEndButtonClassPath =
+		TEXT("/Game/FactoryGame/Interface/UI/Menu/Widget_FrontEnd_Button.Widget_FrontEnd_Button_C");
+	const TCHAR* SubMenuBackgroundClassPath =
+		TEXT("/Game/FactoryGame/Interface/UI/Menu/Widget_SubMenuBackground.Widget_SubMenuBackground_C");
+}
 
 USharedWorldGameInstanceModule::USharedWorldGameInstanceModule()
 {
 	bRootModule = true;
 }
 
+bool USharedWorldGameInstanceModule::ArchetypeHasNamedWidget(const TCHAR* WidgetClassPath, FName WidgetName)
+{
+	UClass* Cls = LoadClass<UUserWidget>(nullptr, WidgetClassPath);
+	const UWidgetBlueprintGeneratedClass* WBGC = Cast<UWidgetBlueprintGeneratedClass>(Cls);
+	if (!WBGC) return false;
+	const UWidgetTree* Tree = WBGC->GetWidgetTreeArchetype();
+	return Tree && Tree->FindWidget(WidgetName) != nullptr;
+}
+
+UWidgetBlueprintHookData* USharedWorldGameInstanceModule::MakeHook(
+	const FString& Comment,
+	const FSoftObjectPath& TargetWidgetClass,
+	UClass* NewWidgetClass,
+	FName NewWidgetName,
+	FName ParentWidgetName,
+	int32 ParentSlotIndex)
+{
+	if (!NewWidgetClass) return nullptr;
+
+	UWidgetBlueprintHookData* Hook = NewObject<UWidgetBlueprintHookData>(this, NAME_None, RF_Transient);
+	Hook->DeveloperComment = Comment;
+	Hook->WidgetClass = TSoftClassPtr<UUserWidget>(TargetWidgetClass);
+	Hook->NewWidgetClass = NewWidgetClass;
+	Hook->NewWidgetName = NewWidgetName;
+	Hook->ParentWidgetType = EWidgetBlueprintHookParentType::Direct;
+	Hook->ParentWidgetName = ParentWidgetName;
+	Hook->ParentSlotIndex = ParentSlotIndex;
+	Hook->SlotConfiguration = nullptr;
+	return Hook;
+}
+
+void USharedWorldGameInstanceModule::RegisterMenuHooks()
+{
+	if (bHooksRegistered) return;
+	bHooksRegistered = true;
+
+	UWidgetBlueprintHookManager* Manager = GEngine ? GEngine->GetEngineSubsystem<UWidgetBlueprintHookManager>() : nullptr;
+	if (!Manager)
+	{
+		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=menu_hook_manager_missing"));
+		return;
+	}
+
+	UClass* FrontEndClass = LoadClass<UUserWidget>(nullptr, FrontEndButtonClassPath);
+	if (!FrontEndClass)
+	{
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=menu_hook_fail reason=\"FrontEnd button class missing\""));
+		return;
+	}
+	UClass* SubMenuClass = LoadClass<UUserWidget>(nullptr, SubMenuBackgroundClassPath);
+	if (!SubMenuClass)
+	{
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=menu_hook_fail reason=\"SubMenuBackground class missing\""));
+		return;
+	}
+
+	const FSoftObjectPath MainMenuPath(MainMenuClassPath);
+	const FSoftObjectPath ManageSessionPath(ManageSessionClassPath);
+
+	// Same pattern as SML Mods, but use stock FrontEnd + SubMenuBackground so the
+	// entry matches Join Game (not the smaller ModsButton_SML / Extensions look).
+	// BP bake: Shared Worlds immediately after Play (slot 2).
+	if (!ArchetypeHasNamedWidget(MainMenuClassPath, TEXT("mButtonSharedWorlds")))
+	{
+		MainMenuButtonHook = MakeHook(
+			TEXT("Shared Worlds FrontEnd button after Play (Join Game style)"),
+			MainMenuPath, FrontEndClass, TEXT("mButtonSharedWorlds"),
+			TEXT("mMainMenuList"), 2);
+		if (MainMenuButtonHook)
+		{
+			Manager->RegisterWidgetBlueprintHook(MainMenuButtonHook);
+			UE_LOG(LogSharedWorld, Log,
+				TEXT("[SharedWorld] event=menu_hook_button ok parent=mMainMenuList slot=2 class=FrontEnd"));
+		}
+	}
+	else
+	{
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_hook_button_skip reason=\"already in archetype\""));
+	}
+
+	if (!ArchetypeHasNamedWidget(MainMenuClassPath, TEXT("SharedWorldsBrowser")))
+	{
+		// Join Game / Load / Options pages are SubMenuBackground shells in mSwitcher.
+		MainMenuBrowserHook = MakeHook(
+			TEXT("Shared Worlds SubMenuBackground page (Join Game panel chrome)"),
+			MainMenuPath, SubMenuClass, TEXT("SharedWorldsBrowser"),
+			TEXT("mSwitcher"), INDEX_NONE);
+		if (MainMenuBrowserHook)
+		{
+			Manager->RegisterWidgetBlueprintHook(MainMenuBrowserHook);
+			UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_hook_browser ok parent=mSwitcher class=SubMenuBackground"));
+		}
+	}
+	else
+	{
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_hook_browser_skip reason=\"already in archetype\""));
+	}
+
+	if (!ArchetypeHasNamedWidget(ManageSessionClassPath, TEXT("mSharedWorld")))
+	{
+		ManageSessionButtonHook = MakeHook(
+			TEXT("Shared World button in Manage Session"),
+			ManageSessionPath, FrontEndClass, TEXT("mSharedWorld"),
+			TEXT("OptionsList"), INDEX_NONE);
+		if (ManageSessionButtonHook)
+		{
+			Manager->RegisterWidgetBlueprintHook(ManageSessionButtonHook);
+			UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_hook_session_button ok"));
+		}
+	}
+
+	if (!ArchetypeHasNamedWidget(ManageSessionClassPath, TEXT("SharedWorldSession")))
+	{
+		ManageSessionPageHook = MakeHook(
+			TEXT("Shared World session SubMenuBackground in Manage Session switcher"),
+			ManageSessionPath, SubMenuClass, TEXT("SharedWorldSession"),
+			TEXT("mSwitcher"), INDEX_NONE);
+		if (ManageSessionPageHook)
+		{
+			Manager->RegisterWidgetBlueprintHook(ManageSessionPageHook);
+			UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_hook_session_page ok"));
+		}
+	}
+}
+
 void USharedWorldGameInstanceModule::DispatchLifecycleEvent(ELifecyclePhase Phase)
 {
-	Super::DispatchLifecycleEvent(Phase);
+	// Register hooks before Super so they install with other mod hooks during INITIALIZATION.
 	if (Phase == ELifecyclePhase::INITIALIZATION)
 	{
 		RegisterMenuHooks();
 	}
+
+	Super::DispatchLifecycleEvent(Phase);
+
 	if (Phase == ELifecyclePhase::POST_INITIALIZATION)
 	{
 		if (UGameInstance* GI = GetGameInstance())
@@ -54,117 +195,185 @@ void USharedWorldGameInstanceModule::DispatchLifecycleEvent(ELifecyclePhase Phas
 	}
 }
 
-void USharedWorldGameInstanceModule::RegisterMenuHooks()
+void USharedWorldGameInstanceModule::WireMainMenuSharedWorldsButton(UUserWidget* MainMenuRoot, UUserWidget* Button)
 {
-	if (bHooksRegistered) return;
+	if (!MainMenuRoot || !Button) return;
 
-	UWidgetBlueprintHookManager* Manager = GEngine ? GEngine->GetEngineSubsystem<UWidgetBlueprintHookManager>() : nullptr;
-	if (!Manager)
+	// Same Construct sequence as Widget_MainMenuButtonExtensions (Mods).
+	UWidget* Switcher = SharedWorldFg::FindNamedWidget(MainMenuRoot, TEXT("mSwitcher"));
+	UWidget* List = SharedWorldFg::FindNamedWidget(MainMenuRoot, TEXT("mMainMenuList"));
+	UWidget* Target = SharedWorldFg::FindNamedWidget(MainMenuRoot, TEXT("SharedWorldsBrowser"));
+
+	// Match BP_MainMenuWidget bake: Continue → Play → Shared Worlds → Join Game…
+	if (UPanelWidget* NavList = Cast<UPanelWidget>(List))
 	{
-		UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=menu_hook_manager_missing"));
-		bHooksRegistered = true;
-		return;
+		UWidget* Play = SharedWorldFg::FindNamedWidget(MainMenuRoot, TEXT("mButtonPlay"));
+		const int32 PlayIdx = IndexOfChild(NavList, Play);
+		const int32 CurIdx = IndexOfChild(NavList, Button);
+		const int32 WantIdx = (PlayIdx == INDEX_NONE) ? 2 : PlayIdx + 1;
+		if (CurIdx != INDEX_NONE && CurIdx != WantIdx)
+		{
+			NavList->RemoveChild(Button);
+			const int32 InsertAt = FMath::Clamp(WantIdx, 0, NavList->GetChildrenCount());
+			NavList->InsertChildAt(InsertAt, Button);
+			UE_LOG(LogSharedWorld, Log,
+				TEXT("[SharedWorld] event=menu_reorder_button from=%d to=%d (after Play)"),
+				CurIdx, InsertAt);
+		}
 	}
 
-	// Same integration path SML uses for Mods: archetype insert into mMainMenuList.
-	// Indirect_Child + mButtonJoinGame → parent panel is mMainMenuList.
-	// Slot index 3 = after Continue(0), New Game(1), Join Game(2).
-	UClass* FrontEndClass = SharedWorldNativeMenu::LoadFrontEndButtonClass();
-	if (FrontEndClass)
+	SharedWorldFg::SetFrontEndTitle(Button, NSLOCTEXT("SharedWorld", "MenuEntry", "Shared Worlds"));
+	// Match Join Game / New Game: big FrontEnd row, transparent plate (no Mods-style compact bar).
+	SharedWorldFg::SetBoolProp(Button, TEXT("IsBigButton"), true);
+	SharedWorldFg::SetBoolProp(Button, TEXT("mIsBigButton"), true);
+	SharedWorldFg::SetBoolProp(Button, TEXT("mUseTransparentBackground"), true);
+	SharedWorldFg::SetBoolProp(Button, TEXT("UseTransparentBackground"), true);
+	SharedWorldFg::SetBoolProp(Button, TEXT("mShineOnHover"), true);
+	if (UFunction* Fn = Button->FindFunction(TEXT("SetIsBigButton")))
 	{
-		MainMenuHook = NewObject<UWidgetBlueprintHookData>(this, NAME_None, RF_Transient);
-		MainMenuHook->DeveloperComment = TEXT("Shared Worlds under Join Game (native FrontEnd button).");
-		MainMenuHook->WidgetClass = TSoftClassPtr<UUserWidget>(FSoftObjectPath(
-			TEXT("/Game/FactoryGame/Interface/UI/Menu/MainMenu/BP_MainMenuWidget.BP_MainMenuWidget_C")));
-		MainMenuHook->NewWidgetClass = FrontEndClass;
-		MainMenuHook->NewWidgetName = TEXT("mButtonSharedWorlds");
-		MainMenuHook->ParentWidgetType = EWidgetBlueprintHookParentType::Indirect_Child;
-		MainMenuHook->ParentWidgetName = TEXT("mButtonJoinGame");
-		MainMenuHook->ParentSlotIndex = 3;
-		// Do NOT set SlotConfiguration: SML's Generic slot helper has a VerticalBox
-		// bug (calls HorizontalBoxSlot->SetSize on a null) and crashes here.
-		MainMenuHook->SlotConfiguration = nullptr;
-
-		Manager->RegisterWidgetBlueprintHook(MainMenuHook);
-		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=menu_hook_main ok class=%s slot=3"), *FrontEndClass->GetName());
+		struct FParamsBool { bool bValue; };
+		FParamsBool P{true};
+		Button->ProcessEvent(Fn, &P);
 	}
-	else
+	if (UFunction* Fn = Button->FindFunction(TEXT("SetUseTransparentBackground")))
 	{
-		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=menu_hook_main_fail reason=\"FrontEnd button class missing\""));
+		struct FParamsBool { bool bValue; };
+		FParamsBool P{true};
+		Button->ProcessEvent(Fn, &P);
+	}
+	if (Button->WidgetTree)
+	{
+		TArray<UWidget*> All;
+		Button->WidgetTree->GetAllWidgets(All);
+		for (UWidget* W : All)
+		{
+			if (USizeBox* SB = Cast<USizeBox>(W))
+			{
+				SB->SetMinDesiredHeight(56.f);
+				SB->ClearWidthOverride();
+				SB->SetMinDesiredWidth(280.f);
+			}
+		}
 	}
 
-	// Pause Manage Session: runtime inject only (FrontEnd OnClicked is unreliable here).
-	// Hook disabled — SessionMenuButton uses a real UButton.
+	if (List) SharedWorldFg::SetObjectProp(Button, TEXT("mParentList"), List);
+	if (Switcher) SharedWorldFg::SetObjectProp(Button, TEXT("mSwitcherWidget"), Switcher);
+	if (Target) SharedWorldFg::SetObjectProp(Button, TEXT("mTargetWidget"), Target);
 
-	bHooksRegistered = true;
+	// Also bind Open so C++ browser content is ready / filled when clicked.
+	SharedWorldFg::BindFrontEndClicked(Button, this,
+		GET_FUNCTION_NAME_CHECKED(USharedWorldGameInstanceModule, OpenSharedWorldsBrowser));
+
+	Button->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	Button->SynchronizeProperties();
+	Button->InvalidateLayoutAndVolatility();
+
+	UE_LOG(LogSharedWorld, Log,
+		TEXT("[SharedWorld] event=menu_wire_button name=%s switcher=%d target=%d list=%d"),
+		*Button->GetName(), Switcher ? 1 : 0, Target ? 1 : 0, List ? 1 : 0);
+}
+
+UWidgetSwitcher* USharedWorldGameInstanceModule::FindAncestorSwitcher(UWidget* Child)
+{
+	for (UWidget* It = Child; It; It = It->GetParent())
+	{
+		if (UWidgetSwitcher* Sw = Cast<UWidgetSwitcher>(It->GetParent()))
+		{
+			return Sw;
+		}
+	}
+	return nullptr;
+}
+
+UWidget* USharedWorldGameInstanceModule::SwitcherChildContaining(UWidgetSwitcher* Switcher, UWidget* Descendant)
+{
+	if (!Switcher || !Descendant) return nullptr;
+	for (UWidget* It = Descendant; It; It = It->GetParent())
+	{
+		if (It->GetParent() == Switcher)
+		{
+			return It;
+		}
+	}
+	return nullptr;
+}
+
+bool USharedWorldGameInstanceModule::ActivateInSwitcher(UWidget* Target)
+{
+	if (!Target) return false;
+	UWidgetSwitcher* Switcher = FindAncestorSwitcher(Target);
+	if (!Switcher) return false;
+	UWidget* Child = SwitcherChildContaining(Switcher, Target);
+	if (!Child) return false;
+	Switcher->SetActiveWidget(Child);
+	Target->SetVisibility(ESlateVisibility::Visible);
+	Child->SetVisibility(ESlateVisibility::Visible);
+	return true;
 }
 
 void USharedWorldGameInstanceModule::OpenSharedWorldsBrowser()
 {
-	if (UGameInstance* GI = GetGameInstance())
+	UGameInstance* GI = GetGameInstance();
+	if (!GI) return;
+	APlayerController* PC = GI->GetFirstLocalPlayerController();
+	if (!PC) return;
+
+	UUserWidget* MainMenu = nullptr;
+	if (AFGMainMenuHUD* HUD = Cast<AFGMainMenuHUD>(PC->GetHUD()))
 	{
-		if (APlayerController* PC = GI->GetFirstLocalPlayerController())
+		MainMenu = Cast<UUserWidget>(HUD->mMainMenu.Get());
+	}
+
+	// Prefer the hooked SharedWorldsBrowser page (SML ModList_SML equivalent).
+	USharedWorldBrowserWidget* Browser = nullptr;
+	if (MainMenu)
+	{
+		Browser = Cast<USharedWorldBrowserWidget>(
+			SharedWorldFg::FindNamedWidget(MainMenu, TEXT("SharedWorldsBrowser")));
+	}
+	if (!Browser && MainMenu && MainMenu->WidgetTree)
+	{
+		TArray<UWidget*> All;
+		MainMenu->WidgetTree->GetAllWidgets(All);
+		for (UWidget* W : All)
 		{
-			UUserWidget* MainMenu = nullptr;
-			if (UWorld* World = GI->GetWorld())
-			{
-				if (AFGMainMenuHUD* HUD = Cast<AFGMainMenuHUD>(PC->GetHUD()))
-				{
-					MainMenu = HUD->mMainMenu.Get();
-				}
-			}
-
-			// One browser instance per menu open — prefer parenting into the
-			// same WidgetSwitcher Join Game / Mods use.
-			USharedWorldBrowserWidget* Browser = nullptr;
-			if (MainMenu && MainMenu->WidgetTree)
-			{
-				TArray<UWidget*> All;
-				MainMenu->WidgetTree->GetAllWidgets(All);
-				for (UWidget* W : All)
-				{
-					if (USharedWorldBrowserWidget* Existing = Cast<USharedWorldBrowserWidget>(W))
-					{
-						Browser = Existing;
-						break;
-					}
-				}
-			}
-			// Also find a prior browser parented under the switcher / SubMenu shell (not in WidgetTree).
-			if (!Browser && MainMenu)
-			{
-				if (UObject* ExistingObj = StaticFindObject(
-					USharedWorldBrowserWidget::StaticClass(), MainMenu, TEXT("SharedWorld_Browser")))
-				{
-					Browser = Cast<USharedWorldBrowserWidget>(ExistingObj);
-				}
-			}
-			if (!Browser)
-			{
-				if (MainMenu)
-				{
-					const FName BrowserName = MakeUniqueObjectName(
-						MainMenu, USharedWorldBrowserWidget::StaticClass(), TEXT("SharedWorld_Browser"));
-					Browser = Cast<USharedWorldBrowserWidget>(
-						UUserWidget::CreateWidgetInstance(*MainMenu, USharedWorldBrowserWidget::StaticClass(), BrowserName));
-				}
-				else
-				{
-					Browser = CreateWidget<USharedWorldBrowserWidget>(PC, USharedWorldBrowserWidget::StaticClass());
-				}
-			}
-			if (!Browser) return;
-
-			if (MainMenu)
-			{
-				Browser->ActivateInMainMenu(MainMenu);
-			}
-			else
-			{
-				Browser->AddToViewport(200);
-				Browser->SetVisibility(ESlateVisibility::Visible);
-			}
+			Browser = Cast<USharedWorldBrowserWidget>(W);
+			if (Browser) break;
 		}
+	}
+	if (!Browser)
+	{
+		TArray<UUserWidget*> Existing;
+		UWidgetBlueprintLibrary::GetAllWidgetsOfClass(GI->GetWorld(), Existing, USharedWorldBrowserWidget::StaticClass(), false);
+		for (UUserWidget* W : Existing)
+		{
+			Browser = Cast<USharedWorldBrowserWidget>(W);
+			if (Browser) break;
+		}
+	}
+	if (!Browser)
+	{
+		if (MainMenu)
+		{
+			const FName BrowserName = MakeUniqueObjectName(
+				MainMenu, USharedWorldBrowserWidget::StaticClass(), TEXT("SharedWorld_Browser"));
+			Browser = Cast<USharedWorldBrowserWidget>(
+				UUserWidget::CreateWidgetInstance(*MainMenu, USharedWorldBrowserWidget::StaticClass(), BrowserName));
+		}
+		else
+		{
+			Browser = CreateWidget<USharedWorldBrowserWidget>(PC, USharedWorldBrowserWidget::StaticClass());
+		}
+	}
+	if (!Browser) return;
+
+	if (MainMenu)
+	{
+		Browser->ActivateInMainMenu(MainMenu);
+	}
+	else
+	{
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=browser_open_fail reason=\"no main menu\""));
 	}
 }
 
@@ -176,23 +385,65 @@ void USharedWorldGameInstanceModule::OpenSharedWorldSession()
 	APlayerController* PC = GI->GetFirstLocalPlayerController();
 	if (!PC) return;
 
-	// Reuse an existing screen if already open.
+	USharedWorldSessionWidget* Screen = nullptr;
 	TArray<UUserWidget*> Existing;
 	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(GI->GetWorld(), Existing, USharedWorldSessionWidget::StaticClass(), false);
 	for (UUserWidget* W : Existing)
 	{
-		if (USharedWorldSessionWidget* Screen = Cast<USharedWorldSessionWidget>(W))
+		Screen = Cast<USharedWorldSessionWidget>(W);
+		if (Screen) break;
+	}
+
+	UUserWidget* ManageSession = nullptr;
+	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(GI->GetWorld(), Existing, UUserWidget::StaticClass(), false);
+	for (UUserWidget* W : Existing)
+	{
+		if (W && W->GetClass()->GetName().Contains(TEXT("ManageSession")))
 		{
-			Screen->SetVisibility(ESlateVisibility::Visible);
-			Screen->AddToViewport(20000);
-			return;
+			ManageSession = W;
+			break;
 		}
 	}
 
-	USharedWorldSessionWidget* Screen = CreateWidget<USharedWorldSessionWidget>(PC, USharedWorldSessionWidget::StaticClass());
-	if (Screen)
+	if (!Screen && ManageSession)
 	{
-		Screen->AddToViewport(20000);
+		if (UUserWidget* Hooked = Cast<UUserWidget>(SharedWorldFg::FindNamedWidget(ManageSession, TEXT("SharedWorldSession"))))
+		{
+			Screen = Cast<USharedWorldSessionWidget>(Hooked);
+		}
+	}
+
+	if (!Screen && ManageSession)
+	{
+		const FName Name = MakeUniqueObjectName(
+			ManageSession, USharedWorldSessionWidget::StaticClass(), TEXT("SharedWorldSessionContent"));
+		Screen = Cast<USharedWorldSessionWidget>(
+			UUserWidget::CreateWidgetInstance(*ManageSession, USharedWorldSessionWidget::StaticClass(), Name));
+	}
+
+	if (!Screen)
+	{
+		UE_LOG(LogSharedWorld, Error, TEXT("[SharedWorld] event=session_missing"));
+		return;
+	}
+
+	if (ManageSession)
+	{
+		if (UUserWidget* Shell = Cast<UUserWidget>(SharedWorldFg::FindNamedWidget(ManageSession, TEXT("SharedWorldSession"))))
+		{
+			if (Shell != Screen)
+			{
+				SharedWorldFg::FillSubMenuContent(Shell, Screen);
+			}
+			if (ActivateInSwitcher(Shell))
+			{
+				return;
+			}
+		}
+	}
+
+	if (!ActivateInSwitcher(Screen))
+	{
 		Screen->SetVisibility(ESlateVisibility::Visible);
 	}
 }
@@ -211,67 +462,16 @@ void USharedWorldGameInstanceModule::TryEnsureMenuEntries(UWorld* World)
 		}
 	}
 
-	// Manage Session only exists while that pause submenu is open — search every time.
 	TArray<UUserWidget*> Widgets;
-	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, Widgets, UUserWidget::StaticClass(), /*TopLevelOnly=*/false);
-	int32 ManageSessionCount = 0;
+	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, Widgets, UUserWidget::StaticClass(), false);
 	for (UUserWidget* W : Widgets)
 	{
 		if (!W) continue;
-		const FString ClassName = W->GetClass()->GetName();
-		if (ClassName.Contains(TEXT("ManageSession")))
+		if (W->GetClass()->GetName().Contains(TEXT("ManageSession")))
 		{
-			++ManageSessionCount;
 			TryInjectPauseSessionEntry(W);
 		}
 	}
-	if (ManageSessionCount == 0)
-	{
-		static double LastMissLog = 0.0;
-		const double Now = FPlatformTime::Seconds();
-		if (Now - LastMissLog > 5.0)
-		{
-			LastMissLog = Now;
-			UE_LOG(LogSharedWorld, Verbose, TEXT("[SharedWorld] event=pause_inject_idle reason=\"no ManageSession widget\" widgets=%d"), Widgets.Num());
-		}
-	}
-}
-
-UWidget* USharedWorldGameInstanceModule::FindWidgetByText(UWidget* Root, const FString& ExactText) const
-{
-	if (!Root) return nullptr;
-	if (UTextBlock* Text = Cast<UTextBlock>(Root))
-	{
-		if (Text->GetText().ToString().Equals(ExactText, ESearchCase::IgnoreCase))
-		{
-			return Text;
-		}
-	}
-	if (UUserWidget* UW = Cast<UUserWidget>(Root))
-	{
-		if (UWidget* Found = FindWidgetByText(UW->GetRootWidget(), ExactText)) return Found;
-	}
-	if (UPanelWidget* Panel = Cast<UPanelWidget>(Root))
-	{
-		const int32 N = Panel->GetChildrenCount();
-		for (int32 i = 0; i < N; ++i)
-		{
-			if (UWidget* Found = FindWidgetByText(Panel->GetChildAt(i), ExactText)) return Found;
-		}
-	}
-	return nullptr;
-}
-
-UPanelWidget* USharedWorldGameInstanceModule::FindParentPanel(UWidget* Child) const
-{
-	for (UWidget* It = Child; It; It = It->GetParent())
-	{
-		if (UPanelWidget* Panel = Cast<UPanelWidget>(It->GetParent()))
-		{
-			return Panel;
-		}
-	}
-	return nullptr;
 }
 
 int32 USharedWorldGameInstanceModule::IndexOfChild(UPanelWidget* Panel, UWidget* Child) const
@@ -284,57 +484,33 @@ void USharedWorldGameInstanceModule::TryInjectMainMenuButton(UUserWidget* MainMe
 	SharedWorldNativeMenu::EnsureMainMenuEntry(MainMenuRoot, this);
 }
 
-static UPanelWidget* FindNamedPanel(UUserWidget* Root, FName Name)
-{
-	if (!Root) return nullptr;
-	if (Root->WidgetTree)
-	{
-		if (UPanelWidget* P = Cast<UPanelWidget>(Root->WidgetTree->FindWidget(Name))) return P;
-	}
-	if (FObjectProperty* OP = FindFProperty<FObjectProperty>(Root->GetClass(), Name))
-	{
-		return Cast<UPanelWidget>(OP->GetObjectPropertyValue_InContainer(Root));
-	}
-	return nullptr;
-}
-
-static UUserWidget* FindDirectFrontEndChild(UPanelWidget* List, const FString& LabelSubstring)
-{
-	if (!List) return nullptr;
-	for (int32 i = 0; i < List->GetChildrenCount(); ++i)
-	{
-		UUserWidget* Child = Cast<UUserWidget>(List->GetChildAt(i));
-		if (!Child) continue;
-		if (FTextProperty* TP = FindFProperty<FTextProperty>(Child->GetClass(), TEXT("mDisplayName")))
-		{
-			if (TP->GetPropertyValue_InContainer(Child).ToString().Contains(LabelSubstring))
-			{
-				return Child;
-			}
-		}
-		if (Child->GetName().Contains(TEXT("ManagePlayers")) && LabelSubstring.Contains(TEXT("Manage")))
-		{
-			return Child;
-		}
-	}
-	return nullptr;
-}
-
 void USharedWorldGameInstanceModule::TryInjectPauseSessionEntry(UUserWidget* ManageSessionRoot)
 {
 	if (!ManageSessionRoot) return;
 
-	// Left nav = parent of Manage Players (OptionsList). Never mButtonsBox (Apply/Reset).
-	UUserWidget* ManagePlayers = nullptr;
-	if (FObjectProperty* OP = FindFProperty<FObjectProperty>(ManageSessionRoot->GetClass(), TEXT("mManagePlayers")))
+	if (UWidget* Baked = SharedWorldFg::FindNamedWidget(ManageSessionRoot, TEXT("mSharedWorld")))
 	{
-		ManagePlayers = Cast<UUserWidget>(OP->GetObjectPropertyValue_InContainer(ManageSessionRoot));
+		if (UUserWidget* BakedUW = Cast<UUserWidget>(Baked))
+		{
+			UWidget* Switcher = SharedWorldFg::FindNamedWidget(ManageSessionRoot, TEXT("mSwitcher"));
+			UWidget* List = SharedWorldFg::FindNamedWidget(ManageSessionRoot, TEXT("OptionsList"));
+			UWidget* Target = SharedWorldFg::FindNamedWidget(ManageSessionRoot, TEXT("SharedWorldSession"));
+			SharedWorldFg::SetFrontEndTitle(BakedUW, NSLOCTEXT("SharedWorld", "SessionEntry", "Shared World"));
+			SharedWorldFg::SetBoolProp(BakedUW, TEXT("IsBigButton"), false);
+			if (List) SharedWorldFg::SetObjectProp(BakedUW, TEXT("mParentList"), List);
+			if (Switcher) SharedWorldFg::SetObjectProp(BakedUW, TEXT("mSwitcherWidget"), Switcher);
+			if (Target) SharedWorldFg::SetObjectProp(BakedUW, TEXT("mTargetWidget"), Target);
+			SharedWorldFg::BindFrontEndClicked(BakedUW, this,
+				GET_FUNCTION_NAME_CHECKED(USharedWorldGameInstanceModule, OpenSharedWorldSession));
+			BakedUW->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+			BakedUW->SynchronizeProperties();
+		}
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=pause_baked_present name=%s"), *Baked->GetName());
+		return;
 	}
-	UUserWidget* SessionSettingsBtn = nullptr;
-	if (FObjectProperty* OP = FindFProperty<FObjectProperty>(ManageSessionRoot->GetClass(), TEXT("mSessionSettings")))
-	{
-		SessionSettingsBtn = Cast<UUserWidget>(OP->GetObjectPropertyValue_InContainer(ManageSessionRoot));
-	}
+
+	UUserWidget* ManagePlayers = Cast<UUserWidget>(SharedWorldFg::GetObjectProp(ManageSessionRoot, TEXT("mManagePlayers")));
+	UUserWidget* SessionSettingsBtn = Cast<UUserWidget>(SharedWorldFg::GetObjectProp(ManageSessionRoot, TEXT("mSessionSettings")));
 
 	UPanelWidget* NavList = ManagePlayers ? Cast<UPanelWidget>(ManagePlayers->GetParent()) : nullptr;
 	if (!NavList && SessionSettingsBtn) NavList = Cast<UPanelWidget>(SessionSettingsBtn->GetParent());
@@ -345,37 +521,6 @@ void USharedWorldGameInstanceModule::TryInjectPauseSessionEntry(UUserWidget* Man
 		return;
 	}
 
-	auto IsStaleFrontEnd = [](UWidget* Child) -> bool
-	{
-		if (!Child || Cast<USharedWorldSessionMenuButton>(Child)) return false;
-		if (Child->GetName().Contains(TEXT("mButtonSharedWorldSession"))
-			|| Child->GetName().Contains(TEXT("SharedWorld_Session")))
-		{
-			return true;
-		}
-		if (FTextProperty* TP = FindFProperty<FTextProperty>(Child->GetClass(), TEXT("mDisplayName")))
-		{
-			return TP->GetPropertyValue_InContainer(Child).ToString().Equals(TEXT("Shared World"), ESearchCase::IgnoreCase);
-		}
-		return false;
-	};
-
-	// Strip non-clickable FrontEnd leftovers from nav + bottom Apply bar.
-	auto StripStale = [&](UPanelWidget* Panel)
-	{
-		if (!Panel) return;
-		for (int32 i = Panel->GetChildrenCount() - 1; i >= 0; --i)
-		{
-			UWidget* Child = Panel->GetChildAt(i);
-			if (!IsStaleFrontEnd(Child)) continue;
-			Child->RemoveFromParent();
-			UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=pause_strip_stale name=%s"), *Child->GetName());
-		}
-	};
-	StripStale(NavList);
-	StripStale(FindNamedPanel(ManageSessionRoot, TEXT("mButtonsBox")));
-
-	// Already have a real clickable SessionMenuButton?
 	for (int32 i = 0; i < NavList->GetChildrenCount(); ++i)
 	{
 		if (Cast<USharedWorldSessionMenuButton>(NavList->GetChildAt(i)))

@@ -236,14 +236,15 @@ public:
 	void OnMenuWorldReady(UWorld* World);
 	void OnGameWorldReady(UWorld* World);
 
-	/** Full-screen migration / recovery overlay driven by HostMigrationEngine. */
+	/** Migration / recovery status shown in Manage Session → Shared World (no viewport overlay). */
 	void EnsureMigrationOverlay(UWorld* World);
 	void UpdateMigrationOverlay(const FString& WorldId);
 	void HideMigrationOverlay();
-	/** True while crash recovery / successor takeover should keep the MW2-style overlay. */
+	/** True while crash recovery / successor takeover is in flight. */
 	bool IsHostMigrationInFlight(const FString& WorldId) const;
 
 private:
+	void PushMigrationStatusToMenus(const FText& Message);
 	void HandleActorsInitialized(const UWorld::FActorsInitializedParams& Params);
 	void RetryShowMenuPanel();
 	bool TryShowMenuPanel(UWorld* World);
@@ -258,7 +259,7 @@ private:
 	void SaveSettings();
 	/** Runs Work on the background queue; Then runs on the game thread if the subsystem still exists. */
 	/** Starts a background refill of Runtime.CloudCache when it is stale (never blocks). */
-	void RefreshCloudCache(FSharedWorldRuntime& Runtime) const;
+	void RefreshCloudCache(const FSharedWorldRuntime& Runtime) const;
 	void RunInBackground(TFunction<TPair<bool, FString>()> Work, TFunction<void(USharedWorldSubsystem&, bool, const FString&)> Then);
 	/** Resolves a connected player's name/id to a platform player id (or returns Who). */
 	FString ResolvePlayerId(const FString& Who, FString& OutDisplayName) const;

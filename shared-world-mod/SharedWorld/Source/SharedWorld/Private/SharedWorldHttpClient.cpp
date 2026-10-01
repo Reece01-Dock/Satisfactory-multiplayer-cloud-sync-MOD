@@ -2,21 +2,55 @@
 
 #include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
+#include "Misc/CoreMisc.h"
 #include "Misc/FileHelper.h"
 #include "SharedWorldTypes.h"
 
 namespace
 {
-	/** Shared between the waiting worker and the completion callback, which may outlive a timed-out wait. */
+	/**
+	 * Shared between the waiting worker and the completion callback.
+	 * Must outlive both: the callback may run after Send() has already returned
+	 * (soft-abandon on shutdown) or after a timed-out CancelRequest.
+	 */
 	struct FCompletion
 	{
-		FEvent* Done = FPlatformProcess::GetSynchEventFromPool(true);
+		FEvent* Done = nullptr;
 		TAtomic<bool> bConnectionFailed{false};
-		~FCompletion() { FPlatformProcess::ReturnSynchEventToPool(Done); }
+		TAtomic<bool> bFinished{false};
+
+		FCompletion()
+		{
+			Done = FPlatformProcess::GetSynchEventFromPool(true);
+		}
+
+		~FCompletion()
+		{
+			if (Done)
+			{
+				FPlatformProcess::ReturnSynchEventToPool(Done);
+				Done = nullptr;
+			}
+		}
 	};
+
+	bool ShouldAbandonHttp(const std::shared_ptr<std::atomic<bool>>& ShutdownFlag)
+	{
+		if (IsEngineExitRequested())
+		{
+			return true;
+		}
+		return ShutdownFlag && ShutdownFlag->load(std::memory_order_acquire);
+	}
+}
+
+FSharedWorldHttpClient::FSharedWorldHttpClient(std::shared_ptr<std::atomic<bool>> InShutdownFlag)
+	: ShutdownFlag(std::move(InShutdownFlag))
+{
 }
 
 sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest& Request)
@@ -25,10 +59,11 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 	// ticks the HTTP module and must keep rendering.
 	check(!IsInGameThread());
 
-	// Redirects: whatever the backend does is safe. GitHubReleaseObjectStore
-	// accepts a 302 (and follows it itself without credentials) or an
-	// already-followed 200. libcurl >= 7.58 does not forward a custom
-	// Authorization header to a different host when it follows a redirect.
+	if (ShouldAbandonHttp(ShutdownFlag))
+	{
+		return sw::MakeError(sw::ErrorCode::Network, "shutting down");
+	}
+
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
 	Req->SetVerb(UTF8_TO_TCHAR(Request.Method.c_str()));
 	Req->SetURL(UTF8_TO_TCHAR(Request.Url.c_str()));
@@ -44,7 +79,6 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 	const bool bHasBody = !Request.BodyFile.empty() || !Request.Body.empty();
 	if (bHasBody && !bHasContentType)
 	{
-		// CurlHttp Shipping assert: body requires Content-Type unless URL-encoded.
 		Req->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 	}
 	if (!Request.BodyFile.empty())
@@ -64,29 +98,49 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 	Req->SetTimeout(static_cast<float>(TimeoutSeconds));
 
 	TSharedRef<FCompletion, ESPMode::ThreadSafe> State = MakeShared<FCompletion, ESPMode::ThreadSafe>();
-	Req->OnProcessRequestComplete().BindLambda([State](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk)
+	// Capture Req so the request stays alive if Send() soft-abandons before completion.
+	// Never Unbind+destroy the request from a worker during engine exit — that races
+	// FHttpModule teardown and has caused hard machine lockups.
+	Req->OnProcessRequestComplete().BindLambda([State, Req](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk)
 	{
 		State->bConnectionFailed = !bOk || !Response.IsValid();
+		State->bFinished = true;
 		State->Done->Trigger();
 	});
 	if (!Req->ProcessRequest())
 	{
 		return sw::MakeError(sw::ErrorCode::Network, "could not start the HTTP request");
 	}
-	// The request has its own timeout; this outer bound only protects the
-	// worker if completion never arrives (e.g. the engine is shutting down).
-	if (!State->Done->Wait(FTimespan::FromSeconds(TimeoutSeconds + 30)))
+
+	const double Deadline = FPlatformTime::Seconds() + static_cast<double>(TimeoutSeconds) + 30.0;
+	for (;;)
 	{
-		Req->OnProcessRequestComplete().Unbind();
-		Req->CancelRequest();
-		return sw::MakeError(sw::ErrorCode::Network, "network request timed out");
+		if (State->Done->Wait(FTimespan::FromMilliseconds(100)))
+		{
+			break;
+		}
+		if (ShouldAbandonHttp(ShutdownFlag))
+		{
+			// Soft abandon: leave the request + callback alive (held by the lambda).
+			// Do NOT CancelRequest / Unbind here.
+			return sw::MakeError(sw::ErrorCode::Network, "shutting down");
+		}
+		if (FPlatformTime::Seconds() >= Deadline)
+		{
+			// Normal timeout (not exit): cancel and wait briefly for the callback so
+			// the pooled FEvent is not returned while Trigger may still run.
+			Req->CancelRequest();
+			State->Done->Wait(FTimespan::FromSeconds(2.0));
+			return sw::MakeError(sw::ErrorCode::Network, "network request timed out");
+		}
 	}
-	FHttpResponsePtr Response = Req->GetResponse();
-	if (State->bConnectionFailed || !Response.IsValid())
+
+	if (State->bConnectionFailed || !Req->GetResponse().IsValid())
 	{
 		return sw::MakeError(sw::ErrorCode::Network, "network request failed");
 	}
 
+	FHttpResponsePtr Response = Req->GetResponse();
 	sw::HttpResponse Out;
 	Out.Status = Response->GetResponseCode();
 	for (const FString& Header : Response->GetAllHeaders())
@@ -100,7 +154,6 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 	const TArray<uint8>& Content = Response->GetContent();
 	if (!Request.ResponseFile.empty() && Out.Status >= 200 && Out.Status < 300)
 	{
-		// Written in one piece; the core re-hashes the file before trusting it.
 		if (!FFileHelper::SaveArrayToFile(Content, UTF8_TO_TCHAR(Request.ResponseFile.c_str())))
 		{
 			return sw::MakeError(sw::ErrorCode::Io, "could not write the downloaded file");

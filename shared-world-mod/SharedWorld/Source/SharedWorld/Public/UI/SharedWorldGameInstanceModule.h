@@ -1,7 +1,6 @@
 #pragma once
-// Registers Shared Worlds into Satisfactory's main menu / pause menus.
-// Prefers SML WidgetBlueprintHooks; falls back to runtime tree injection
-// (find "Join Game" / Manage Session list and insert after it).
+// SML-style menu integration: WidgetBlueprintHooks inject Shared Worlds into
+// stock BP_MainMenuWidget / Widget_ManageSession (same idea as ModsButton_SML).
 
 #include "CoreMinimal.h"
 #include "Module/GameInstanceModule.h"
@@ -11,6 +10,7 @@ class UWidgetBlueprintHookData;
 class UUserWidget;
 class UWidget;
 class UPanelWidget;
+class UWidgetSwitcher;
 
 UCLASS()
 class SHAREDWORLD_API USharedWorldGameInstanceModule : public UGameInstanceModule
@@ -21,32 +21,48 @@ public:
 	USharedWorldGameInstanceModule();
 	virtual void DispatchLifecycleEvent(ELifecyclePhase Phase) override;
 
-	/** Opens the Shared Worlds browser from a main-menu button. */
 	UFUNCTION()
 	void OpenSharedWorldsBrowser();
 
-	/** Opens the in-session Shared World management screen. */
 	UFUNCTION()
 	void OpenSharedWorldSession();
 
-	/** Runtime inject after Join Game / Manage Session (safe to call repeatedly). */
 	void TryEnsureMenuEntries(UWorld* World);
+
+	/** Wire FrontEnd button like SML ModsButton_SML Construct (switcher + target + label). */
+	void WireMainMenuSharedWorldsButton(UUserWidget* MainMenuRoot, UUserWidget* Button);
 
 private:
 	void RegisterMenuHooks();
+	UWidgetBlueprintHookData* MakeHook(
+		const FString& Comment,
+		const FSoftObjectPath& TargetWidgetClass,
+		UClass* NewWidgetClass,
+		FName NewWidgetName,
+		FName ParentWidgetName,
+		int32 ParentSlotIndex);
+
 	void TryInjectMainMenuButton(UUserWidget* MainMenuRoot);
-	void TryInjectPauseSessionEntry(UUserWidget* PauseRoot);
-	UWidget* FindWidgetByText(UWidget* Root, const FString& ExactText) const;
-	UPanelWidget* FindParentPanel(UWidget* Child) const;
+	void TryInjectPauseSessionEntry(UUserWidget* ManageSessionRoot);
 	int32 IndexOfChild(UPanelWidget* Panel, UWidget* Child) const;
 
-	UPROPERTY()
-	TObjectPtr<UWidgetBlueprintHookData> MainMenuHook;
+	static UWidgetSwitcher* FindAncestorSwitcher(UWidget* Child);
+	static UWidget* SwitcherChildContaining(UWidgetSwitcher* Switcher, UWidget* Descendant);
+	static bool ActivateInSwitcher(UWidget* Target);
+	static bool ArchetypeHasNamedWidget(const TCHAR* WidgetClassPath, FName WidgetName);
 
 	UPROPERTY()
-	TObjectPtr<UWidgetBlueprintHookData> PauseMenuHook;
+	TObjectPtr<UWidgetBlueprintHookData> MainMenuButtonHook;
 
-	/** Pause Manage Session FrontEnd button we already bound (avoid rebinding every tick). */
+	UPROPERTY()
+	TObjectPtr<UWidgetBlueprintHookData> MainMenuBrowserHook;
+
+	UPROPERTY()
+	TObjectPtr<UWidgetBlueprintHookData> ManageSessionButtonHook;
+
+	UPROPERTY()
+	TObjectPtr<UWidgetBlueprintHookData> ManageSessionPageHook;
+
 	UPROPERTY()
 	TWeakObjectPtr<UUserWidget> PauseSessionButton;
 

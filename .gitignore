@@ -3,3 +3,6 @@
 /shared-world-mod/SharedWorld/Intermediate/
 # Native core-tests CMake build
 /build/
+
+# Local SMR upload zips
+/dist/
