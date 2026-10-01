@@ -27,10 +27,20 @@ a new revision.
 | `shared-world-mod/core-tests/` | Native CMake build + core tests |
 | `docs/` | Setup, architecture, testing, UI notes |
 | `STATUS.md` | What works, what is verified, what still needs the game |
+| `tools/package-smr.ps1` | After Alpakit: bump version + build `SharedWorlds.zip` for ficsit.app |
 
 **Status: development preview.** The core is implemented and tested; the
 Unreal layer compiles and packages (Shipping). In-game runtime validation
 is still outstanding — see `STATUS.md`.
+
+### Upload a new version to ficsit.app
+
+1. Package `SharedWorld` with Alpakit (Shipping, Windows).
+2. From the repo root: `powershell -File tools/package-smr.ps1`  
+   (bumps patch `1.0.0` → `1.0.1`, builds multi-target zip)
+3. Upload **`Desktop\SharedWorlds.zip`** — not `SharedWorld-Windows.zip`.
+
+Use `-Minor` / `-Major` / `-Set 1.2.3` on that script to bump differently, or `-NoBump` to keep the current version.
 
 The original project is by Vojtak42; this repository is licensed under the
 terms in `LICENSE`.

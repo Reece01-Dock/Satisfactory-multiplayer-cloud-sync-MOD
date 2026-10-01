@@ -1,8 +1,8 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.1.0",
-	"SemVersion": "0.1.0",
+	"VersionName": "1.0.0",
+	"SemVersion": "1.0.0",
 	"GameVersion": ">=491125",
 	"FriendlyName": "Shared World",
 	"Description": "Play one shared multiplayer world with friends. Press Play Shared World: it joins the friend who is hosting, or downloads the latest save and hosts. Runs entirely inside the game; the world is stored in a GitHub repository or a shared folder.",
@@ -13,42 +13,21 @@
 	"IsBetaVersion": true,
 	"Installed": false,
 	"RequiredOnRemote": true,
-	"RemoteVersionRange": ">=0.1.0 <0.2.0",
+	"RemoteVersionRange": ">=1.0.0 <2.0.0",
 	"Modules": [
 		{
 			"Name": "SharedWorld",
 			"Type": "Runtime",
 			"LoadingPhase": "PostDefault",
-			"TargetDenyList": [
-				"Server"
-			]
+			"TargetDenyList": [ "Server" ]
 		}
 	],
 	"Plugins": [
-		{
-			"Name": "SML",
-			"Enabled": true,
-			"SemVersion": "^3.12.0"
-		},
-		{
-			"Name": "OnlineIntegration",
-			"Enabled": true
-		},
-		{
-			"Name": "OnlineServices",
-			"Enabled": true
-		},
-		{
-			"Name": "OnlineSubsystem",
-			"Enabled": true
-		},
-		{
-			"Name": "OnlineSubsystemUtils",
-			"Enabled": true
-		},
-		{
-			"Name": "ModelViewViewModel",
-			"Enabled": true
-		}
+		{ "Name": "SML", "Enabled": true, "SemVersion": "^3.12.0" },
+		{ "Name": "OnlineIntegration", "Enabled": true },
+		{ "Name": "OnlineServices", "Enabled": true },
+		{ "Name": "OnlineSubsystem", "Enabled": true },
+		{ "Name": "OnlineSubsystemUtils", "Enabled": true },
+		{ "Name": "ModelViewViewModel", "Enabled": true }
 	]
 }
