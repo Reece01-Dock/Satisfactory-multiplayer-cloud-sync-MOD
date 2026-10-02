@@ -383,7 +383,7 @@ void USharedWorldBrowserWidget::RunConnect()
 	ScheduleRebuild();
 
 	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
-	Async(EAsyncExecution::ThreadPool, [Weak, Attempt, Conn, Params, BackendName = B->Name]() mutable
+	FRcloneRuntime::RunDetached([Weak, Attempt, Conn, Params, BackendName = B->Name]() mutable
 	{
 		FString Error;
 		bool bOk = false;
@@ -408,8 +408,14 @@ void USharedWorldBrowserWidget::RunConnect()
 			if (!bOk) (void)RcloneActions::DeleteRemote(Conn.RemoteName); // never leave a half-working connection behind
 		}
 		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld/rclone] event=connect type=%s ok=%d"), *BackendName, bOk ? 1 : 0);
+		if (IsEngineExitRequested())
+		{
+			// The game is closing: nobody can save this connection, so undo it here rather than leave it orphaned.
+			if (bOk) (void)RcloneActions::DeleteRemote(Conn.RemoteName);
+			return;
+		}
 
-		AsyncTask(ENamedThreads::GameThread, [Weak, Attempt, Conn, bOk, Error]()
+		FRcloneRuntime::PostToGameThread([Weak, Attempt, Conn, bOk, Error]()
 		{
 			USharedWorldBrowserWidget* Self = Weak.Get();
 			if (!Self || Self->ConnectAttempt != Attempt)
@@ -461,12 +467,12 @@ void USharedWorldBrowserWidget::OnStorageRcloneTest()
 
 	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
 	const FRcloneConnection Copy = *Conn;
-	Async(EAsyncExecution::ThreadPool, [Weak, Copy]()
+	FRcloneRuntime::RunDetached([Weak, Copy]()
 	{
 		FString Error;
 		const bool bOk = RcloneActions::ProbeStorage(Copy.Fs(), Error);
 		const FRcloneAbout About = bOk ? RcloneActions::About(Copy.Fs()) : FRcloneAbout();
-		AsyncTask(ENamedThreads::GameThread, [Weak, Copy, bOk, Error, About]()
+		FRcloneRuntime::PostToGameThread([Weak, Copy, bOk, Error, About]()
 		{
 			USharedWorldBrowserWidget* Self = Weak.Get();
 			if (!Self) return;

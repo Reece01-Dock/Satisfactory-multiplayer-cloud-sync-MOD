@@ -846,11 +846,11 @@ void USharedWorldBrowserWidget::OnRcloneSelfTest()
 	ListScroll = nullptr;
 	ScheduleRebuild();
 	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
-	Async(EAsyncExecution::ThreadPool, [Weak]()
+	FRcloneRuntime::RunDetached([Weak]()
 	{
 		const FRcloneSelfTestResult R = RunRcloneSelfTest(); // blocking; off the game thread
 		const FString Text = R.Summary();
-		AsyncTask(ENamedThreads::GameThread, [Weak, Text]()
+		FRcloneRuntime::PostToGameThread([Weak, Text]()
 		{
 			if (USharedWorldBrowserWidget* Self = Weak.Get())
 			{

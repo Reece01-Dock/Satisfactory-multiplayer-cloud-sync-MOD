@@ -1,5 +1,10 @@
 #include "Rclone/RcloneRuntime.h"
 
+#include <thread>
+
+#include "Async/Async.h"
+#include "CoreGlobals.h"
+
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPluginManager.h"
@@ -158,7 +163,10 @@ FRcloneResult FRcloneRuntime::Rpc(const FString& Method, const FString& InputJso
 
 FString FRcloneRuntime::Version()
 {
-	if (!CachedVersion.IsEmpty()) return CachedVersion;
+	{
+		FScopeLock L(&Lock);
+		if (!CachedVersion.IsEmpty()) return CachedVersion;
+	}
 	const FRcloneResult R = Rpc(TEXT("core/version"), TEXT("{}"));
 	if (!R.bOk) return FString();
 	TSharedPtr<FJsonObject> Obj;
@@ -166,13 +174,35 @@ FString FRcloneRuntime::Version()
 	if (FJsonSerializer::Deserialize(Reader, Obj) && Obj.IsValid())
 	{
 		FString V;
-		if (Obj->TryGetStringField(TEXT("version"), V)) CachedVersion = V;
+		if (Obj->TryGetStringField(TEXT("version"), V))
+		{
+			FScopeLock L(&Lock);
+			CachedVersion = V;
+			return V;
+		}
 	}
-	return CachedVersion;
+	return FString();
 }
 
 bool FRcloneRuntime::IsInstalled() const
 {
 	const FString Path = LibraryPath();
 	return !Path.IsEmpty() && FPaths::FileExists(Path);
+}
+
+void FRcloneRuntime::RunDetached(TUniqueFunction<void()> Work)
+{
+	std::thread([Work = MoveTemp(Work)]() mutable
+	{
+		Work();
+	}).detach();
+}
+
+void FRcloneRuntime::PostToGameThread(TUniqueFunction<void()> Fn)
+{
+	if (IsEngineExitRequested()) return;
+	AsyncTask(ENamedThreads::GameThread, [Fn = MoveTemp(Fn)]() mutable
+	{
+		if (!IsEngineExitRequested()) Fn();
+	});
 }

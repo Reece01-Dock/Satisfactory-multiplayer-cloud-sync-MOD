@@ -46,6 +46,15 @@ public:
 	/** Per-user rclone.conf (provider tokens live here; see docs for the planned encryption). */
 	FString ConfigPath() const;
 
+	/**
+	 * Runs blocking rclone work on its own detached thread, never on the engine's thread pool. Some calls cannot be
+	 * cancelled (a browser sign-in waits until the player approves), and the engine waits for pool tasks on exit, so
+	 * pool work could keep the game process alive forever. A detached thread is simply ended by Windows on exit.
+	 */
+	static void RunDetached(TUniqueFunction<void()> Work);
+	/** Queues Fn on the game thread, or drops it once the engine is shutting down (nothing left to update). */
+	static void PostToGameThread(TUniqueFunction<void()> Fn);
+
 private:
 	FRcloneRuntime() = default;
 	FRcloneResult RpcRaw(const FString& Method, const FString& InputJson);
