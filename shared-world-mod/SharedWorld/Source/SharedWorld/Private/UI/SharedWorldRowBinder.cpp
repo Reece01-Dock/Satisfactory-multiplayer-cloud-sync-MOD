@@ -7,6 +7,16 @@ void USharedWorldRowBinder::OnClicked()
 {
 	if (USharedWorldBrowserWidget* B = Browser.Get())
 	{
+		if (TabKind != 0)
+		{
+			B->SetTab(TabKind, TabIndex);
+			return;
+		}
+		if (InviteAction != 0)
+		{
+			B->HandleInvite(InviteId, InviteAction == 1);
+			return;
+		}
 		if (bRemoveFromList)
 		{
 			B->RemoveWorldFromList(WorldId);

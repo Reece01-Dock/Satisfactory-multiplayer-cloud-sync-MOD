@@ -17,6 +17,12 @@ public:
 	bool bPlayOnClick = false;
 	/** Remove from this PC's list (does not delete cloud data). */
 	bool bRemoveFromList = false;
+	/** Set for invitation buttons: 1 = accept, 2 = decline (WorldId unused). */
+	FString InviteId;
+	uint8 InviteAction = 0;
+	/** Tab buttons: TabKind 1 = join page, 2 = settings, 3 = world details. */
+	int32 TabKind = 0;
+	int32 TabIndex = 0;
 
 	UFUNCTION()
 	void OnClicked();
