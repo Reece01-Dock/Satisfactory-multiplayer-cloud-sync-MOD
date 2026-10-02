@@ -4,6 +4,7 @@
 #include "SharedWorldCore/Providers/GitHub.h"
 #include "SharedWorldCore/Storage/EncodingObjectStore.h"
 #include "SharedWorldCore/Storage/FileStorage.h"
+#include "SharedWorldCore/Storage/SaveStorageRouter.h"
 #include "SharedWorldCore/Util/FileUtil.h"
 
 namespace sw
@@ -54,6 +55,14 @@ namespace sw
 				if (C < 0x20) return MakeError(ErrorCode::Invalid, std::string(Key) + " contains control characters");
 			}
 			return S;
+		}
+
+		/** Missing key = empty (settings written by older versions). */
+		Result<std::string> OptionalText(const Value& V, const char* Key, size_t Max)
+		{
+			const Value* F = V.Find(Key);
+			if (!F) return std::string();
+			return Text(V, Key, Max);
 		}
 	}
 
@@ -185,6 +194,9 @@ namespace sw
 			E.Set("lastPlayedAt", FormatTime(W.LastPlayedAt));
 			E.Set("relation", W.Relation == WorldRelation::Shared ? "shared" : "owned");
 			if (!W.InviteCode.empty()) E.Set("inviteCode", W.InviteCode);
+			if (!W.SaveRemote.empty()) E.Set("saveRemote", W.SaveRemote);
+			if (!W.SaveBackend.empty()) E.Set("saveBackend", W.SaveBackend);
+			if (!W.SaveLabel.empty()) E.Set("saveLabel", W.SaveLabel);
 			A.push_back(std::move(E));
 		}
 		V.Set("worlds", Value(std::move(A)));
@@ -242,6 +254,9 @@ namespace sw
 			{
 				W.InviteCode = Ic->AsString();
 			}
+			SW_ASSIGN(W.SaveRemote, OptionalText(E, "saveRemote", 1024));
+			SW_ASSIGN(W.SaveBackend, OptionalText(E, "saveBackend", 64));
+			SW_ASSIGN(W.SaveLabel, OptionalText(E, "saveLabel", 64));
 			if (S.Find(W.WorldId)) return MakeError(ErrorCode::Invalid, "duplicate world id in settings");
 			SW_TRY(S.Upsert(W));
 		}
@@ -288,6 +303,29 @@ namespace sw
 		return file::WriteAtomic(Path, json::Serialize(Settings.ToJson(), 2));
 	}
 
+	namespace
+	{
+		/** Routes the save files to where world.json says they live; the repository is untouched. */
+		void AttachSaveRouter(WorldStorage& Out, const WorldEntry& Entry, const ProviderEnvironment& Env)
+		{
+			SaveStorageRouterConfig R;
+			R.WorldId = Entry.WorldId;
+			R.Repository = Out.Repository;
+			R.Default = Out.Objects;
+			R.SaveRemote = Entry.SaveRemote;
+			R.KnownBackend = Entry.SaveBackend;
+			R.KnownLabel = Entry.SaveLabel;
+			R.OpenRemote = Env.OpenRemoteObjects;
+			if (Env.OnSaveStorageSeen)
+			{
+				auto Seen = Env.OnSaveStorageSeen;
+				const std::string WorldId = Entry.WorldId;
+				R.OnSeen = [Seen, WorldId](const std::string& Backend, const std::string& Label) { Seen(WorldId, Backend, Label); };
+			}
+			Out.Objects = std::make_shared<SaveStorageRouter>(std::move(R));
+		}
+	}
+
 	Result<WorldStorage> OpenWorldStorage(const WorldEntry& Entry, const ProviderEnvironment& Env)
 	{
 		SW_TRY(ValidateWorldId(Entry.WorldId));
@@ -332,6 +370,7 @@ namespace sw
 			Enc.Compress.Level = 3;
 			Enc.Compress.MinRatioGain = 0.05;
 			Out.Objects = std::make_shared<EncodingObjectStore>(std::move(RawObjects), Enc);
+			AttachSaveRouter(Out, Entry, Env);
 			return Out;
 		}
 		case ProviderKind::Folder:
@@ -344,6 +383,7 @@ namespace sw
 			Enc.Compress.Level = 3;
 			Enc.Compress.MinRatioGain = 0.05;
 			Out.Objects = std::make_shared<EncodingObjectStore>(std::move(RawObjects), Enc);
+			AttachSaveRouter(Out, Entry, Env);
 			return Out;
 		}
 		}

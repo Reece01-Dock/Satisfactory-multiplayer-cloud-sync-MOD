@@ -112,6 +112,7 @@ void USharedWorldBrowserWidget::NativeConstruct()
 	if (USharedWorldSubsystem* S = SW())
 	{
 		ChangedHandle = S->OnChanged.AddUObject(this, &USharedWorldBrowserWidget::OnBackendChanged);
+		SaveLinkHandle = S->OnSaveLinkRequested.AddUObject(this, &USharedWorldBrowserWidget::OpenSaveLink);
 		if (!S->IsWelcomeDone() && S->NeedsWelcomeStorageConnect())
 		{
 			Page = EPage::Welcome;
@@ -122,7 +123,11 @@ void USharedWorldBrowserWidget::NativeConstruct()
 
 void USharedWorldBrowserWidget::NativeDestruct()
 {
-	if (USharedWorldSubsystem* S = SW()) S->OnChanged.Remove(ChangedHandle);
+	if (USharedWorldSubsystem* S = SW())
+	{
+		S->OnChanged.Remove(ChangedHandle);
+		S->OnSaveLinkRequested.Remove(SaveLinkHandle);
+	}
 	Super::NativeDestruct();
 }
 
@@ -1684,4 +1689,16 @@ FString USharedWorldBrowserWidget::ComputePageSignature() const
 	default:
 		return FString(); // wizard / welcome / creating pages always rebuild when asked
 	}
+}
+
+void USharedWorldBrowserWidget::OpenSaveLink(const FString& WorldId)
+{
+	if (WorldId.IsEmpty()) return;
+	SelectedWorldId = WorldId;
+	MoreMenuWorldId.Reset();
+	DetailsTab = 3; // Storage
+	SaveLinkNotice.Reset();
+	Page = EPage::Details;
+	ListScroll = nullptr;
+	ScheduleRebuild();
 }

@@ -497,7 +497,7 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 				: NSLOCTEXT("SharedWorld", "RcNotVerified", "Last read/write test failed")))->SetPadding(FMargin(0.f, 0.f, 0.f, 6.f));
 		UTextBlock* Note = MakeText(WidgetTree, FontSmall, TextMuted);
 		Note->SetText(NSLOCTEXT("SharedWorld", "RcNotYetWorlds",
-			"Connected for save files. Worlds don't store their saves here yet; that switch comes in a later update."));
+			"Ready for save files: choose it under \"Save files\" when you create a world. Friends link it from that world's Storage tab."));
 		Host->AddChildToVerticalBox(Note)->SetPadding(FMargin(0.f, 2.f, 0.f, 8.f));
 	}
 

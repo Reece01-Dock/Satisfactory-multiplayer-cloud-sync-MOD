@@ -5,6 +5,7 @@
 // or a world repository. It holds NO secrets: tokens live in the OS
 // credential store (ICredentialStore), referenced only by account name.
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,6 +48,15 @@ namespace sw
 		WorldRelation Relation = WorldRelation::Owned;
 		/** Short share code (XXXX-XXXX) for Join Using Code. Empty until generated. */
 		std::string InviteCode;
+		/**
+		 * This PC's link to the world's save storage when world.json names one (see WorldInfo::SaveStorage):
+		 * an rclone path (remote:folder) whose <worldId> subfolder holds the save files. Empty = not linked here, so
+		 * this PC can still join while someone else hosts but cannot host until linked. SaveBackend/SaveLabel cache
+		 * what world.json says, for the UI.
+		 */
+		std::string SaveRemote;
+		std::string SaveBackend;
+		std::string SaveLabel;
 	};
 
 	struct PendingInvite
@@ -108,6 +118,10 @@ namespace sw
 		std::string GitHubWebBase = "https://github.com";
 		/** Wall clock used for token expiry / refresh. Null → SystemClock per call. */
 		const IClock* Clock = nullptr;
+		/** Opens an object store on an rclone path (remote:folder). Supplied by the game module: core knows no rclone. Null = unavailable. */
+		std::function<Result<std::shared_ptr<IObjectStore>>(const std::string& Fs)> OpenRemoteObjects;
+		/** Called (on a worker thread) when a world's world.json names its save storage, so the UI can show it. */
+		std::function<void(const std::string& WorldId, const std::string& Backend, const std::string& Label)> OnSaveStorageSeen;
 	};
 
 	struct WorldStorage

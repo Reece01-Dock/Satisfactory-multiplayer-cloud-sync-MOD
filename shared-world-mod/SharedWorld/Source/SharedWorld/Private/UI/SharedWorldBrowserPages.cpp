@@ -23,6 +23,9 @@
 #include "UI/SharedWorldRowBinder.h"
 #include "UI/SharedWorldSavePickRow.h"
 #include "UI/SharedWorldUiStyle.h"
+#include "Components/UniformGridPanel.h"
+#include "Components/UniformGridSlot.h"
+#include "Rclone/RcloneProviders.h"
 
 using namespace SharedWorldUi;
 
@@ -311,7 +314,50 @@ void USharedWorldBrowserWidget::RebuildCreateReviewPage()
 	{
 		FString Note;
 		const sw::ProviderConfig P = S->Creation().ResolveDefaultProvider(Note);
-		AddValueRow(NSLOCTEXT("SharedWorld", "RevStorage", "Storage"), P.Kind == sw::ProviderKind::GitHub ? FString(TEXT("GitHub (linked)")) : FString(TEXT("Local folder")));
+		const FString DefaultName = P.Kind == sw::ProviderKind::GitHub ? FString(TEXT("GitHub")) : FString(TEXT("Local folder"));
+		AddValueRow(NSLOCTEXT("SharedWorld", "RevStorage", "World record"), DefaultName,
+			NSLOCTEXT("SharedWorld", "RevStorageDesc", "Who can play, who is hosting, and the save history."));
+
+		// Save files: the default store, or any connected provider that passed its read/write test.
+		TArray<FRcloneConnection> Usable;
+		for (const FRcloneConnection& C : FRcloneConnections::Load())
+		{
+			if (C.bVerified) Usable.Add(C);
+		}
+		if (!PendingSaveConnection.IsEmpty() && !Usable.ContainsByPredicate([&](const FRcloneConnection& C) { return C.RemoteName == PendingSaveConnection; }))
+		{
+			PendingSaveConnection.Reset(); // disconnected since it was picked
+		}
+		UTextBlock* H = MakeText(WidgetTree, FontBody, TextPrimary, true);
+		H->SetText(NSLOCTEXT("SharedWorld", "RevSaves", "Save files"));
+		Col->AddChildToVerticalBox(H)->SetPadding(FMargin(0.f, 8.f, 0.f, 2.f));
+		UTextBlock* HD = MakeText(WidgetTree, FontSmall, TextMuted);
+		HD->SetText(Usable.Num() > 0
+			? NSLOCTEXT("SharedWorld", "RevSavesDesc", "Where the world's saves are uploaded. Friends who want to host link the same storage; anyone can still join while someone else hosts.")
+			: NSLOCTEXT("SharedWorld", "RevSavesNone", "Saves go with the world record. Connect Google Drive, Dropbox and others in Settings > Storage to keep them there instead."));
+		Col->AddChildToVerticalBox(HD)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
+		UUniformGridPanel* Grid = WidgetTree->ConstructWidget<UUniformGridPanel>();
+		Grid->SetSlotPadding(FMargin(0.f, 0.f, 8.f, 8.f));
+		Col->AddChildToVerticalBox(Grid)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
+		int32 Index = 0;
+		auto Choice = [&](const FString& Remote, const FString& Label, const FString& Tip)
+		{
+			UButton* B = MakeTabButton(WidgetTree, FText::FromString(Label), PendingSaveConnection == Remote);
+			B->SetToolTipText(FText::FromString(Tip));
+			USharedWorldRowBinder* Binder = NewObject<USharedWorldRowBinder>(this);
+			Binder->Browser = this;
+			Binder->TabKind = 5;
+			Binder->ConnectValue = Remote;
+			RowBinders.Add(Binder);
+			B->OnClicked.AddDynamic(Binder, &USharedWorldRowBinder::OnClicked);
+			if (UUniformGridSlot* Cell = Grid->AddChildToUniformGrid(B, Index / 3, Index % 3)) Cell->SetHorizontalAlignment(HAlign_Fill);
+			++Index;
+		};
+		Choice(FString(), DefaultName, TEXT("Keep the saves with the world record."));
+		for (const FRcloneConnection& C : Usable)
+		{
+			Choice(C.RemoteName, C.Label, FString::Printf(TEXT("Upload saves to %s, folder \"%s\"."), *C.Label, *C.Folder));
+		}
 	}
 	if (!CreateError.IsEmpty())
 	{
@@ -343,6 +389,16 @@ void USharedWorldBrowserWidget::OnCreateConfirm()
 	Page = EPage::Creating;
 	ListScroll = nullptr;
 	ScheduleRebuild();
+	FSharedWorldSaveTarget Target;
+	for (const FRcloneConnection& C : FRcloneConnections::Load())
+	{
+		if (!PendingSaveConnection.IsEmpty() && C.RemoteName == PendingSaveConnection)
+		{
+			Target.Remote = C.Fs();
+			Target.Backend = C.BackendType;
+			Target.Label = C.Label;
+		}
+	}
 	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
 	S->Creation().CreateFromExistingSave(PendingWorldName, SelectedSaveName, [Weak](bool bOk, const FString& Message)
 	{
@@ -355,6 +411,7 @@ void USharedWorldBrowserWidget::OnCreateConfirm()
 			Self->bPendingFlashOk = true;
 			Self->PendingWorldName.Reset();
 			Self->SelectedSaveName.Reset();
+			Self->PendingSaveConnection.Reset();
 			Self->Page = EPage::Main;
 		}
 		else
@@ -365,7 +422,7 @@ void USharedWorldBrowserWidget::OnCreateConfirm()
 		}
 		Self->ListScroll = nullptr;
 		Self->ScheduleRebuild();
-	});
+	}, Target);
 }
 
 void USharedWorldBrowserWidget::RebuildCreatingPage()
@@ -748,4 +805,12 @@ void USharedWorldBrowserWidget::RebuildSettingsPage()
 	if (bWide && StorageDetailsBox) PopulateProviderDetails(StorageDetailsBox);
 	ListScrollOwner = EPage::Settings;
 	RestoreListScroll(EPage::Settings);
+}
+
+void USharedWorldBrowserWidget::SetCreateSaveTarget(const FString& RemoteName)
+{
+	if (PendingSaveConnection == RemoteName) return;
+	PendingSaveConnection = RemoteName;
+	ListScroll = nullptr;
+	ScheduleRebuild();
 }

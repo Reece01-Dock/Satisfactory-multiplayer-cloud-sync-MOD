@@ -59,6 +59,10 @@ public:
 	void ViewAllProviders();
 	/** Connect form: picks a value for a choice / yes-no setting, or toggles the advanced settings (Name empty). */
 	void SetConnectOption(const FString& Name, const FString& Value);
+	/** Create wizard: where the new world's saves go (rclone remote name; empty = the default storage). */
+	void SetCreateSaveTarget(const FString& RemoteName);
+	/** World Details > Storage: link this PC to the world's save storage (rclone remote name + folder; empty = unlink). */
+	void LinkWorldSaves(const FString& RemoteName);
 
 	/** Called by save picker rows. */
 	void OnSavePicked(const FString& SaveName, const FString& DisplayName);
@@ -240,6 +244,11 @@ private:
 	FString SuggestedWorldName;
 	/** What the player has typed in the create wizard; survives page rebuilds. */
 	FString PendingWorldName;
+	/** Create wizard: chosen save storage (rclone remote name), empty = the default. */
+	FString PendingSaveConnection;
+	/** World Details > Storage: folder typed for linking a world's saves. */
+	UPROPERTY() TObjectPtr<UEditableTextBox> SaveLinkFolderInput;
+	FString SaveLinkNotice;
 	FString CreateError;
 	/** Shown once on the next page build (e.g. result of an action that changed pages). */
 	FString PendingFlash;
@@ -249,6 +258,9 @@ private:
 	FString DetailsMembersText;
 	FString DetailsHistoryText;
 	FDelegateHandle ChangedHandle;
+	FDelegateHandle SaveLinkHandle;
+	/** Opens a world's Storage tab (the "link storage to host" dialog). */
+	void OpenSaveLink(const FString& WorldId);
 	// ---- Settings > Storage UI state
 	UPROPERTY() TObjectPtr<UVerticalBox> StorageGridBox;
 	UPROPERTY() TObjectPtr<UVerticalBox> StorageDetailsBox;

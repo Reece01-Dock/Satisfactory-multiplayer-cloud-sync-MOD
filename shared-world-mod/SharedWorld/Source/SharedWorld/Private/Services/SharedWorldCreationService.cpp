@@ -46,7 +46,7 @@ bool FSharedWorldCreationService::NeedsStorageConnect() const
 	return SW.NeedsWelcomeStorageConnect();
 }
 
-void FSharedWorldCreationService::CreateFromExistingSave(const FString& DisplayName, const FString& SaveName, FDone OnDone)
+void FSharedWorldCreationService::CreateFromExistingSave(const FString& DisplayName, const FString& SaveName, FDone OnDone, const FSharedWorldSaveTarget& SaveTarget)
 {
 	FString Note;
 	const sw::ProviderConfig Provider = ResolveDefaultProvider(Note);
@@ -54,7 +54,7 @@ void FSharedWorldCreationService::CreateFromExistingSave(const FString& DisplayN
 	{
 		SW.MarkWelcomeDone();
 	}
-	SW.CreateWorldFromSave(DisplayName, SaveName, Provider, /*bRestrictToMembers=*/true, OnDone);
+	SW.CreateWorldFromSave(DisplayName, SaveName, Provider, /*bRestrictToMembers=*/true, OnDone, SaveTarget);
 }
 
 void FSharedWorldCreationService::CreateFromCurrentWorld(const FString& DisplayName, FDone OnDone)

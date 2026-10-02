@@ -34,6 +34,10 @@
 #include "SharedWorldCore/Save/SaveFile.h"
 #include "SharedWorldCore/World/Creation.h"
 #include "SharedWorldCore/World/Membership.h"
+#include "SharedWorldCore/Storage/EncodingObjectStore.h"
+#include "SharedWorldCore/Storage/SaveStorageRouter.h"
+#include "Rclone/RcloneObjectStore.h"
+#include "Rclone/RcloneRuntime.h"
 #include "SharedWorldCredentialStore.h"
 #include "SharedWorldGitHubOAuthConfig.h"
 #include "SharedWorldHostController.h"
@@ -394,7 +398,72 @@ sw::ProviderEnvironment USharedWorldSubsystem::MakeEnvironment() const
 	Env.Credentials = Credentials;
 	Env.GitHubOAuthClientId = Std(ResolveGitHubClientId());
 	Env.Clock = &AuthClock;
+	// Worlds whose save files live on an rclone provider (see sw::SaveStorageRouter). Opened lazily on a worker thread.
+	Env.OpenRemoteObjects = [](const std::string& Fs) -> sw::Result<std::shared_ptr<sw::IObjectStore>>
+	{
+		FRcloneRuntime& Rc = FRcloneRuntime::Get();
+		if (!Rc.IsInstalled() || !Rc.EnsureLoaded())
+		{
+			return sw::MakeError(sw::ErrorCode::Unsupported, "The storage engine isn't available, so this world's saves can't be reached.");
+		}
+		auto Raw = std::make_shared<FRcloneObjectStore>(UTF8_TO_TCHAR(Fs.c_str()));
+		sw::EncodingObjectStoreConfig Enc; // same packaging as the GitHub / folder stores
+		Enc.Compress.Kind = sw::CompressionKind::Zstd;
+		Enc.Compress.Level = 3;
+		Enc.Compress.MinRatioGain = 0.05;
+		return std::shared_ptr<sw::IObjectStore>(std::make_shared<sw::EncodingObjectStore>(std::move(Raw), Enc));
+	};
+	TWeakObjectPtr<const USharedWorldSubsystem> WeakThis(this);
+	Env.OnSaveStorageSeen = [WeakThis](const std::string& WorldId, const std::string& Backend, const std::string& Label)
+	{
+		const FString Id = UTF8_TO_TCHAR(WorldId.c_str());
+		const FString B = UTF8_TO_TCHAR(Backend.c_str());
+		const FString L = UTF8_TO_TCHAR(Label.c_str());
+		FRcloneRuntime::PostToGameThread([WeakThis, Id, B, L]()
+		{
+			USharedWorldSubsystem* Self = const_cast<USharedWorldSubsystem*>(WeakThis.Get());
+			if (!Self) return;
+			// Cache what world.json says so the UI can show "saves on Dropbox (not linked)" without a network read.
+			sw::WorldEntry* E = Self->Settings.FindMutable(Std(Id));
+			if (!E || (E->SaveBackend == Std(B) && E->SaveLabel == Std(L))) return;
+			E->SaveBackend = Std(B);
+			E->SaveLabel = Std(L);
+			if (FSharedWorldRuntime* R = Self->FindRuntime(Id))
+			{
+				R->Entry.SaveBackend = E->SaveBackend;
+				R->Entry.SaveLabel = E->SaveLabel;
+			}
+			Self->SaveSettings();
+			Self->OnChanged.Broadcast();
+		});
+	};
 	return Env;
+}
+
+FString USharedWorldSubsystem::SetWorldSaveRemote(const FString& WorldId, const FString& Remote)
+{
+	sw::WorldEntry* E = Settings.FindMutable(Std(WorldId));
+	if (!E) return TEXT("Unknown world.");
+	const FString Clean = Remote.TrimStartAndEnd();
+	if (Clean.Len() > 1024 || (!Clean.IsEmpty() && !Clean.Contains(TEXT(":"))))
+	{
+		return TEXT("Pick a connected storage provider.");
+	}
+	E->SaveRemote = Std(Clean);
+	SaveSettings();
+	if (FSharedWorldRuntime* R = FindRuntime(WorldId))
+	{
+		R->Entry.SaveRemote = E->SaveRemote;
+		// Reopens the world's storage so the next upload/download uses the new link. Deferred while a session runs.
+		if (!RebindRuntimeStorage(*R))
+		{
+			OnChanged.Broadcast();
+			return TEXT("Saved. It takes effect after you leave this world.");
+		}
+	}
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=save_link_set world=%s linked=%d"), *WorldId, Clean.IsEmpty() ? 0 : 1);
+	OnChanged.Broadcast();
+	return FString();
 }
 
 sw::Identity USharedWorldSubsystem::MyIdentity() const
@@ -986,7 +1055,7 @@ void USharedWorldSubsystem::AddExistingWorld(const FString& WorldId, const FStri
 	});
 }
 
-void USharedWorldSubsystem::CreateWorldFromSave(const FString& DisplayName, const FString& SaveName, const sw::ProviderConfig& Provider, bool bRestrictToMembers, FDone OnDone)
+void USharedWorldSubsystem::CreateWorldFromSave(const FString& DisplayName, const FString& SaveName, const sw::ProviderConfig& Provider, bool bRestrictToMembers, FDone OnDone, const FSharedWorldSaveTarget& SaveTarget)
 {
 	const FString Name = DisplayName.TrimStartAndEnd();
 	if (Name.IsEmpty() || Name.Len() > 64)
@@ -1023,6 +1092,13 @@ void USharedWorldSubsystem::CreateWorldFromSave(const FString& DisplayName, cons
 	Entry.AddedAt = NowMs();
 	Entry.Relation = sw::WorldRelation::Owned;
 	Entry.InviteCode = Std(MakeInviteCode(ToFString(Entry.WorldId)));
+	if (!SaveTarget.IsDefault())
+	{
+		// Saves go to the chosen rclone provider; world.json records it so friends know what to link.
+		Entry.SaveRemote = Std(SaveTarget.Remote);
+		Entry.SaveBackend = Std(SaveTarget.Backend);
+		Entry.SaveLabel = Std(SaveTarget.Label);
+	}
 	FSharedWorldRuntime* Runtime = FindOrCreateRuntime(Entry);
 	if (!Runtime)
 	{
@@ -1039,6 +1115,8 @@ void USharedWorldSubsystem::CreateWorldFromSave(const FString& DisplayName, cons
 	Params.Versions = MyVersions();
 	Params.Settings.Name = Std(Name);
 	Params.bRestrictToMembers = bRestrictToMembers;
+	Params.SaveStorage.Backend = Entry.SaveBackend;
+	Params.SaveStorage.Label = Entry.SaveLabel;
 	std::shared_ptr<sw::LeaseManager> Leases = Runtime->Leases;
 	std::shared_ptr<sw::SyncEngine> Sync = Runtime->Sync;
 	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=WorldCreateStarted world=%s save=%s"), *ToFString(Entry.WorldId), *SaveName);
@@ -2343,6 +2421,31 @@ void USharedWorldSubsystem::ShowSessionErrorDialog(const FString& WorldId, const
 	else if (Code == TEXT("INCOMPATIBLE")) Title = NSLOCTEXT("SharedWorld", "ErrIncompat", "This Shared World can't be joined");
 	else if (Code == TEXT("WORLD_NOT_FOUND")) Title = NSLOCTEXT("SharedWorld", "ErrNotFound", "Shared World not found");
 	else if (Code == TEXT("ALREADY_HOSTING_ELSEWHERE")) Title = NSLOCTEXT("SharedWorld", "ErrElsewhere", "Already hosting elsewhere");
+
+	// Hosting needs this world's save files, which live on a provider this PC hasn't linked yet. Joining a friend's
+	// session still works, so this is an offer to link rather than a dead end.
+	const FString NotLinked = UTF8_TO_TCHAR(sw::SaveStorageNotLinkedPhrase);
+	if (Message.Contains(NotLinked) || Detail.Contains(NotLinked))
+	{
+		const sw::WorldEntry* E = Settings.Find(Std(WorldId));
+		const FString Label = (E && !E->SaveLabel.empty()) ? ToFString(E->SaveLabel) : FString(TEXT("its storage"));
+		FSharedWorldModalSpec Link;
+		Link.Tone = ESharedWorldTone::Warning;
+		Link.Title = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostTitle", "Link {0} to host this world"), FText::FromString(Label));
+		Link.Body = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostBody",
+			"This world keeps its saves on {0}. Connect {0} and pick the folder your friend shared with you, then you can host. "
+			"You can still join whenever someone else is hosting."), FText::FromString(Label));
+		Link.ConfirmLabel = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostGo", "Link {0}"), FText::FromString(Label));
+		Link.CancelLabel = NSLOCTEXT("SharedWorld", "LinkToHostLater", "Not now");
+		Link.ConfirmRole = ESharedWorldButtonRole::Config;
+		TWeakObjectPtr<USharedWorldSubsystem> WeakLink(this);
+		Link.OnConfirm = [WeakLink, WorldId]()
+		{
+			if (USharedWorldSubsystem* Self = WeakLink.Get()) Self->OnSaveLinkRequested.Broadcast(WorldId);
+		};
+		ActiveSessionDialog = USharedWorldModal::Show(PC, Link);
+		return;
+	}
 
 	FSharedWorldModalSpec Spec;
 	Spec.Tone = ESharedWorldTone::Problem;

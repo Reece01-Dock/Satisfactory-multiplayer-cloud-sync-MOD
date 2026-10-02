@@ -18,6 +18,7 @@
 #include "Services/SharedWorldCreationService.h"
 #include "Services/SharedWorldDiscoveryService.h"
 #include "Services/SharedWorldInviteService.h"
+#include "SharedWorldSaveTarget.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "SharedWorldSubsystem.generated.h"
 
@@ -26,6 +27,8 @@ class USharedWorldJoinManager;
 class UNetDriver;
 
 DECLARE_MULTICAST_DELEGATE(FOnSharedWorldChanged);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnSharedWorldSaveLinkRequested, const FString& /*WorldId*/);
+
 
 /**
  * Last cloud state document seen for one world, for game-thread readers.
@@ -168,7 +171,14 @@ public:
 	/** Adds a world that already exists in Provider (verified before it is listed). */
 	void AddExistingWorld(const FString& WorldId, const FString& DisplayName, const sw::ProviderConfig& Provider, FDone OnDone);
 	/** Converts the local save SaveName (in the game's save directory) into a new Shared World. The original save is not modified. */
-	void CreateWorldFromSave(const FString& DisplayName, const FString& SaveName, const sw::ProviderConfig& Provider, bool bRestrictToMembers, FDone OnDone);
+	void CreateWorldFromSave(const FString& DisplayName, const FString& SaveName, const sw::ProviderConfig& Provider, bool bRestrictToMembers, FDone OnDone, const FSharedWorldSaveTarget& SaveTarget = FSharedWorldSaveTarget());
+	/**
+	 * Links (or with an empty Remote, unlinks) this PC to the save storage of a world whose world.json names one.
+	 * Remote is an rclone path (remote:folder) that contains the world's folder. Returns an error message or empty.
+	 */
+	FString SetWorldSaveRemote(const FString& WorldId, const FString& Remote);
+	/** Fired when hosting needs a save link this PC does not have (the browser opens that world's Storage tab). */
+	FOnSharedWorldSaveLinkRequested OnSaveLinkRequested;
 	/** Removes the world from this PC's list only. Refused while a session for it is active. */
 	FString ForgetWorld(const FString& WorldId);
 	std::vector<sw::WorldEntry> GetConfiguredWorlds() const { return Settings.Worlds; }

@@ -188,6 +188,19 @@ namespace sw
 		std::string ModVersion;
 		std::vector<RequiredMod> RequiredMods;
 
+		/**
+		 * Where this world's save files live when they are not in the repository's own object store (an rclone provider
+		 * such as Dropbox). Every PC links its own connection to it; the repository, leases and revisions stay where they are.
+		 * Empty = the default store. Absent from world.json for default worlds, so older mod versions read it unchanged.
+		 */
+		struct SaveStorageInfo
+		{
+			std::string Backend; // rclone backend type, e.g. "dropbox"
+			std::string Label;   // shown to players, e.g. "Dropbox"
+			bool IsDefault() const { return Backend.empty(); }
+		};
+		SaveStorageInfo SaveStorage;
+
 		json::Value ToJson() const;
 		static Result<WorldInfo> FromJson(const json::Value& V);
 		Status Validate() const;

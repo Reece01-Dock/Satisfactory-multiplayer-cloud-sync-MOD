@@ -22,6 +22,7 @@ namespace sw
 		W.Info.GameBuild = P.Versions.GameBuild;
 		W.Info.ModVersion = P.Versions.ModVersion;
 		W.Info.RequiredMods = P.Versions.InstalledMods;
+		W.Info.SaveStorage = P.SaveStorage;
 		W.Players.bOpen = !P.bRestrictToMembers;
 		W.Players.Members.push_back(Member{P.Creator.PlayerId, P.Creator.DisplayName, Role::Owner});
 		W.Settings = P.Settings;

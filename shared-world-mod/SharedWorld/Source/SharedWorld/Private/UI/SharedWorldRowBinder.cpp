@@ -12,6 +12,16 @@ void USharedWorldRowBinder::OnClicked()
 			B->SetConnectOption(ConnectOption, ConnectValue);
 			return;
 		}
+		if (TabKind == 5)
+		{
+			B->SetCreateSaveTarget(ConnectValue);
+			return;
+		}
+		if (TabKind == 6)
+		{
+			B->LinkWorldSaves(ConnectValue);
+			return;
+		}
 		if (TabKind != 0)
 		{
 			B->SetTab(TabKind, TabIndex);

@@ -20,7 +20,9 @@ public:
 	/** Set for invitation buttons: 1 = accept, 2 = decline (WorldId unused). */
 	FString InviteId;
 	uint8 InviteAction = 0;
-	/** Connect form choice buttons (TabKind 4): sets ConnectOption = ConnectValue; empty option toggles advanced settings. */
+	/** TabKind 4: connect form choice (ConnectOption = ConnectValue; empty option toggles advanced settings).
+	 *  TabKind 5: create wizard save storage (ConnectValue = rclone remote, empty = default).
+	 *  TabKind 6: link a world's saves (ConnectValue = rclone remote, empty = unlink). */
 	FString ConnectOption;
 	FString ConnectValue;
 	/** Tab buttons: TabKind 1 = join page, 2 = settings, 3 = world details. */

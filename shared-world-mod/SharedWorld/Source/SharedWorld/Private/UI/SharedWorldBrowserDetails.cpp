@@ -12,6 +12,12 @@
 #include "UI/SharedWorldRowBinder.h"
 #include "UI/SharedWorldUiStyle.h"
 #include "UI/SharedWorldWorldCard.h"
+#include "Components/UniformGridPanel.h"
+#include "Components/UniformGridSlot.h"
+#include "Rclone/RcloneObjectStore.h"
+#include "Rclone/RcloneProviders.h"
+#include "Rclone/RcloneRuntime.h"
+#include "SharedWorldUeConvert.h"
 
 using namespace SharedWorldUi;
 
@@ -291,9 +297,144 @@ void USharedWorldBrowserWidget::AddDetailsStorage(UVerticalBox* Col, const FShar
 	AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StWhere", "Location"),
 		FText::FromString(bGit ? FString::Printf(TEXT("%s/%s"), UTF8_TO_TCHAR(Entry->Provider.Owner.c_str()), UTF8_TO_TCHAR(Entry->Provider.Repo.c_str()))
 			: FString(UTF8_TO_TCHAR(Entry->Provider.FolderPath.c_str()))), TextPrimary);
+	const bool bRcloneSaves = !Entry->SaveBackend.empty();
+	const FString SaveLabel = !Entry->SaveLabel.empty() ? SharedWorldUe::ToFString(Entry->SaveLabel) : SharedWorldUe::ToFString(Entry->SaveBackend);
+	const bool bLinked = !Entry->SaveRemote.empty();
+	AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StSaves", "Save files"),
+		bRcloneSaves ? FText::FromString(SaveLabel) : NSLOCTEXT("SharedWorld", "StSavesDefault", "With the world record"), TextPrimary);
+	if (bRcloneSaves)
+	{
+		AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StSavesHere", "On this PC"),
+			bLinked ? FText::FromString(SharedWorldUe::ToFString(Entry->SaveRemote) + TEXT("/") + Item.Id())
+				: NSLOCTEXT("SharedWorld", "StSavesNotLinked", "Not linked"), bLinked ? Ok : Warn);
+	}
 	UTextBlock* Note = MakeText(WidgetTree, FontSmall + 1, TextMuted);
-	Note->SetText(NSLOCTEXT("SharedWorld", "StNote", "The latest save of this world is kept here so any player can pick it up. Manage the account under Shared Worlds Settings."));
+	Note->SetText(bRcloneSaves
+		? FText::Format(NSLOCTEXT("SharedWorld", "StNoteRclone",
+			"Who can play and who is hosting are kept above; the saves themselves are on {0}. Anyone can join while someone else hosts. To host, link {0} on this PC."),
+			FText::FromString(SaveLabel))
+		: NSLOCTEXT("SharedWorld", "StNote", "The latest save of this world is kept here so any player can pick it up. Manage the account under Shared Worlds Settings."));
 	Col->AddChildToVerticalBox(Note)->SetPadding(FMargin(2.f, 4.f, 0.f, 0.f));
+	if (!bRcloneSaves) return;
+
+	// ---- link / relink this PC to the world's save storage
+	UTextBlock* LinkHead = MakeText(WidgetTree, FontBody, TextPrimary, true);
+	LinkHead->SetText(bLinked ? NSLOCTEXT("SharedWorld", "StRelink", "Change the link") : FText::Format(NSLOCTEXT("SharedWorld", "StLinkHead", "Link {0}"), FText::FromString(SaveLabel)));
+	Col->AddChildToVerticalBox(LinkHead)->SetPadding(FMargin(2.f, 16.f, 0.f, 2.f));
+	UTextBlock* LinkHelp = MakeText(WidgetTree, FontSmall, TextMuted);
+	LinkHelp->SetText(FText::Format(NSLOCTEXT("SharedWorld", "StLinkHelp",
+		"Type the folder that contains this world's folder \"{0}\" (leave it empty if your friend shared that folder with you directly), then pick your connection."),
+		FText::FromString(Item.Id())));
+	Col->AddChildToVerticalBox(LinkHelp)->SetPadding(FMargin(2.f, 0.f, 0.f, 8.f));
+
+	TArray<FRcloneConnection> Matching;
+	for (const FRcloneConnection& C : FRcloneConnections::Load())
+	{
+		if (C.BackendType == SharedWorldUe::ToFString(Entry->SaveBackend)) Matching.Add(C);
+	}
+	if (Matching.Num() == 0)
+	{
+		UButton* Go = nullptr;
+		Col->AddChildToVerticalBox(MakeNoticePanel(WidgetTree, ESharedWorldTone::Warning,
+			FText::Format(NSLOCTEXT("SharedWorld", "StNoConn", "{0} isn't connected on this PC"), FText::FromString(SaveLabel)),
+			NSLOCTEXT("SharedWorld", "StNoConnBody", "Connect it in Settings > Storage, then come back here to link this world."),
+			Go, NSLOCTEXT("SharedWorld", "StOpenStorage", "Open Storage")))->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
+		if (Go) Go->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnSettingsClicked);
+	}
+	else
+	{
+		SaveLinkFolderInput = AddTextField(Col, NSLOCTEXT("SharedWorld", "StFolderHint", "Folder, e.g. SharedWorlds (empty = top level)"),
+			bLinked ? SharedWorldUe::ToFString(Entry->SaveRemote).RightChop(SharedWorldUe::ToFString(Entry->SaveRemote).Find(TEXT(":")) + 1) : Matching[0].Folder);
+		UUniformGridPanel* Grid = WidgetTree->ConstructWidget<UUniformGridPanel>();
+		Grid->SetSlotPadding(FMargin(0.f, 0.f, 8.f, 8.f));
+		Col->AddChildToVerticalBox(Grid);
+		int32 Index = 0;
+		auto Choice = [&](const FString& Remote, const FText& Label, ESharedWorldButtonRole Role)
+		{
+			TObjectPtr<UTextBlock> L;
+			UButton* B = MakeRoleButton(WidgetTree, Role, L, Label, 15, FMargin(14.f, 9.f));
+			USharedWorldRowBinder* Binder = NewObject<USharedWorldRowBinder>(this);
+			Binder->Browser = this;
+			Binder->TabKind = 6;
+			Binder->ConnectValue = Remote;
+			RowBinders.Add(Binder);
+			B->OnClicked.AddDynamic(Binder, &USharedWorldRowBinder::OnClicked);
+			if (UUniformGridSlot* Cell = Grid->AddChildToUniformGrid(B, Index / 3, Index % 3)) Cell->SetHorizontalAlignment(HAlign_Fill);
+			++Index;
+		};
+		for (const FRcloneConnection& C : Matching)
+		{
+			Choice(C.RemoteName, Matching.Num() > 1
+				? FText::Format(NSLOCTEXT("SharedWorld", "StLinkWithN", "Link with {0} ({1})"), FText::FromString(C.Label), FText::FromString(C.RemoteName))
+				: FText::Format(NSLOCTEXT("SharedWorld", "StLinkWith", "Link with {0}"), FText::FromString(C.Label)),
+				ESharedWorldButtonRole::Config);
+		}
+		if (bLinked) Choice(FString(), NSLOCTEXT("SharedWorld", "StUnlink", "Unlink"), ESharedWorldButtonRole::Danger);
+	}
+	if (!SaveLinkNotice.IsEmpty())
+	{
+		UTextBlock* N = MakeText(WidgetTree, FontSmall + 1, TextMuted);
+		N->SetText(FText::FromString(SaveLinkNotice));
+		Col->AddChildToVerticalBox(N)->SetPadding(FMargin(2.f, 6.f, 0.f, 0.f));
+	}
+}
+
+void USharedWorldBrowserWidget::LinkWorldSaves(const FString& RemoteName)
+{
+	USharedWorldSubsystem* S = SW();
+	if (!S || SelectedWorldId.IsEmpty()) return;
+	const FString WorldId = SelectedWorldId;
+	if (RemoteName.IsEmpty())
+	{
+		const FString LinkErr = S->SetWorldSaveRemote(WorldId, FString());
+		SaveLinkNotice = LinkErr.IsEmpty() ? FString(TEXT("Unlinked. You can still join while someone else hosts.")) : LinkErr;
+		ScheduleRebuild();
+		return;
+	}
+	FString Folder = SaveLinkFolderInput ? SaveLinkFolderInput->GetText().ToString().TrimStartAndEnd() : FString();
+	Folder.ReplaceInline(TEXT("\\"), TEXT("/"));
+	while (Folder.StartsWith(TEXT("/"))) Folder.RightChopInline(1);
+	while (Folder.EndsWith(TEXT("/"))) Folder.LeftChopInline(1);
+	if (Folder.Contains(TEXT("..")))
+	{
+		SaveLinkNotice = TEXT("That folder name isn't allowed.");
+		ScheduleRebuild();
+		return;
+	}
+	const FString Remote = RemoteName + TEXT(":") + Folder;
+	SaveLinkNotice = TEXT("Checking for this world's save files...");
+	ScheduleRebuild();
+
+	// Look before linking, so a wrong folder is caught now rather than when the player tries to host.
+	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
+	FRcloneRuntime::RunDetached([Weak, WorldId, Remote]()
+	{
+		FString Fs = Remote;
+		if (!Fs.EndsWith(TEXT(":"))) Fs += TEXT("/");
+		Fs += WorldId;
+		FRcloneObjectStore Store(Fs);
+		auto Listed = Store.List();
+		const int32 Count = Listed ? static_cast<int32>(Listed->size()) : -1;
+		const FString Problem = Listed ? FString() : FString(UTF8_TO_TCHAR(Listed.Err().Message.c_str()));
+		FRcloneRuntime::PostToGameThread([Weak, WorldId, Remote, Fs, Count, Problem]()
+		{
+			USharedWorldBrowserWidget* Self = Weak.Get();
+			USharedWorldSubsystem* Sub = Self ? Self->SW() : nullptr;
+			if (!Sub) return;
+			if (Count < 0)
+			{
+				Self->SaveLinkNotice = FString::Printf(TEXT("Couldn't read %s: %s"), *Fs, *Problem.Left(200));
+			}
+			else
+			{
+				const FString LinkErr = Sub->SetWorldSaveRemote(WorldId, Remote);
+				Self->SaveLinkNotice = !LinkErr.IsEmpty() ? LinkErr
+					: Count > 0 ? FString::Printf(TEXT("Linked. Found %d save file%s in %s."), Count, Count == 1 ? TEXT("") : TEXT("s"), *Fs)
+					: FString::Printf(TEXT("Linked, but %s is empty. If this world already has saves, check the folder."), *Fs);
+			}
+			Self->ScheduleRebuild();
+		});
+	});
 }
 
 void USharedWorldBrowserWidget::AddDetailsAdvanced(UVerticalBox* Col, const FSharedWorldBrowserItem& Item)
