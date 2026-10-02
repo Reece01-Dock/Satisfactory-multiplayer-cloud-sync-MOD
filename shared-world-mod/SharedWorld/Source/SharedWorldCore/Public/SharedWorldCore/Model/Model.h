@@ -200,6 +200,11 @@ namespace sw
 			bool IsDefault() const { return Backend.empty(); }
 		};
 		SaveStorageInfo SaveStorage;
+		/**
+		 * Set on a world's OLD location after the whole world moved elsewhere (e.g. GitHub -> Dropbox). That copy is
+		 * frozen: nobody may host it, so the world can never continue in two places. Players link the new location.
+		 */
+		SaveStorageInfo MovedTo;
 
 		json::Value ToJson() const;
 		static Result<WorldInfo> FromJson(const json::Value& V);

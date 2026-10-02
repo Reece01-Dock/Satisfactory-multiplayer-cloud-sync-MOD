@@ -398,6 +398,17 @@ namespace sw
 			Fail(E);
 			return;
 		}
+		if (Info.Ok() && !Info->MovedTo.IsDefault())
+		{
+			// This copy was frozen when the world moved: hosting it would fork the world.
+			ErrorInfo E;
+			E.Code = "WORLD_MOVED";
+			E.Message = "This world moved to " + (Info->MovedTo.Label.empty() ? Info->MovedTo.Backend : Info->MovedTo.Label)
+				+ ". Link " + (Info->MovedTo.Label.empty() ? Info->MovedTo.Backend : Info->MovedTo.Label)
+				+ " in the world's Storage tab to keep playing.";
+			Fail(E);
+			return;
+		}
 		if (Info.Ok())
 		{
 			if (Status C = CheckCompatibility(Cfg.Versions, *Info, Snap->State.Head); !C)

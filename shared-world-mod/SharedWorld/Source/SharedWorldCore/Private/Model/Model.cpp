@@ -539,6 +539,13 @@ namespace sw
 			S.Set("label", SaveStorage.Label);
 			V.Set("saveStorage", std::move(S));
 		}
+		if (!MovedTo.IsDefault())
+		{
+			Value M;
+			M.Set("backend", MovedTo.Backend);
+			M.Set("label", MovedTo.Label);
+			V.Set("movedTo", std::move(M));
+		}
 		return V;
 	}
 
@@ -580,6 +587,11 @@ namespace sw
 			{
 				if (!(std::isalnum(static_cast<unsigned char>(Ch)) || Ch == ' ' || Ch == '-' || Ch == '_')) return MakeError(ErrorCode::Invalid, "saveStorage backend invalid");
 			}
+		}
+		if (const Value* Mv = ObjectField(V, "movedTo"))
+		{
+			SW_ASSIGN(W.MovedTo.Backend, GetText(*Mv, "backend", 64));
+			SW_ASSIGN(W.MovedTo.Label, GetText(*Mv, "label", 64));
 		}
 		SW_TRY(W.Validate());
 		return W;

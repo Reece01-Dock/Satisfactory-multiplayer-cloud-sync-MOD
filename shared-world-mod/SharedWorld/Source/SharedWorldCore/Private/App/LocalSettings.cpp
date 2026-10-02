@@ -17,6 +17,7 @@ namespace sw
 		{
 		case ProviderKind::GitHub: return "github";
 		case ProviderKind::Folder: return "folder";
+		case ProviderKind::Rclone: return "rclone";
 		}
 		return "unknown";
 	}
@@ -75,6 +76,13 @@ namespace sw
 			return {};
 		case ProviderKind::Folder:
 			return ValidateFolder(FolderPath);
+		case ProviderKind::Rclone:
+		{
+			if (Remote.empty() || Remote.size() > 1024 || Remote.find(':') == std::string::npos) return MakeError(ErrorCode::Invalid, "invalid storage location");
+			if (Remote.find("..") != std::string::npos) return MakeError(ErrorCode::Invalid, "storage location must not contain '..'");
+			for (unsigned char Ch : Remote) if (Ch < 0x20) return MakeError(ErrorCode::Invalid, "storage location contains control characters");
+			return {};
+		}
 		}
 		return MakeError(ErrorCode::Invalid, "unknown storage provider");
 	}
@@ -87,6 +95,12 @@ namespace sw
 		{
 			V.Set("owner", Owner);
 			V.Set("repo", Repo);
+		}
+		else if (Kind == ProviderKind::Rclone)
+		{
+			V.Set("remote", Remote);
+			V.Set("backend", Backend);
+			V.Set("label", Label);
 		}
 		else
 		{
@@ -110,6 +124,13 @@ namespace sw
 		{
 			C.Kind = ProviderKind::Folder;
 			SW_ASSIGN(C.FolderPath, Text(V, "path", 1024));
+		}
+		else if (Kind == "rclone")
+		{
+			C.Kind = ProviderKind::Rclone;
+			SW_ASSIGN(C.Remote, Text(V, "remote", 1024));
+			SW_ASSIGN(C.Backend, OptionalText(V, "backend", 64));
+			SW_ASSIGN(C.Label, OptionalText(V, "label", 64));
 		}
 		else
 		{
@@ -370,6 +391,23 @@ namespace sw
 			Enc.Compress.Level = 3;
 			Enc.Compress.MinRatioGain = 0.05;
 			Out.Objects = std::make_shared<EncodingObjectStore>(std::move(RawObjects), Enc);
+			AttachSaveRouter(Out, Entry, Env);
+			return Out;
+		}
+		case ProviderKind::Rclone:
+		{
+			// The whole world on an rclone provider: an append-only log for the record/state/locks (safe without any
+			// conditional write) and content-addressed save objects next to it.
+			if (!Env.OpenRemoteLogStore || !Env.OpenRemoteObjects) return MakeError(ErrorCode::Unsupported, "the storage engine isn't available");
+			std::string Fs = Entry.Provider.Remote;
+			if (Fs.back() != ':' && Fs.back() != '/') Fs += '/';
+			Fs += Entry.WorldId;
+			std::shared_ptr<ILogStore> Log;
+			SW_ASSIGN(Log, Env.OpenRemoteLogStore(Fs + "/record"));
+			LogRepositoryConfig LogCfg;
+			LogCfg.SettleMs = Env.RemoteSettleMs;
+			Out.Repository = std::make_shared<LogRepository>(std::move(Log), LogCfg);
+			SW_ASSIGN(Out.Objects, Env.OpenRemoteObjects(Fs));
 			AttachSaveRouter(Out, Entry, Env);
 			return Out;
 		}

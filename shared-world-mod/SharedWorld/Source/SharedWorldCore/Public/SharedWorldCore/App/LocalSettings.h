@@ -12,13 +12,14 @@
 #include <vector>
 
 #include "SharedWorldCore/Providers/GitHubAuth.h"
+#include "SharedWorldCore/Storage/LogRepository.h"
 #include "SharedWorldCore/Storage/Storage.h"
 #include "SharedWorldCore/Util/Json.h"
 #include "SharedWorldCore/Util/Time.h"
 
 namespace sw
 {
-	enum class ProviderKind { GitHub, Folder };
+	enum class ProviderKind { GitHub, Folder, Rclone };
 	const char* ToString(ProviderKind K);
 
 	struct ProviderConfig
@@ -29,6 +30,11 @@ namespace sw
 		std::string Repo;
 		// Folder: absolute path of a local folder or network share.
 		std::string FolderPath;
+		// Rclone: the whole world (record, state, locks and saves) on an rclone provider. Remote is this PC's rclone path
+		// (remote:folder); the world lives in its <worldId> subfolder. Backend/Label name the provider for the UI.
+		std::string Remote;
+		std::string Backend;
+		std::string Label;
 
 		json::Value ToJson() const;
 		static Result<ProviderConfig> FromJson(const json::Value& V);
@@ -116,6 +122,10 @@ namespace sw
 		std::string GitHubApiBase = "https://api.github.com";
 		std::string GitHubUploadBase = "https://uploads.github.com";
 		std::string GitHubWebBase = "https://github.com";
+		/** Opens plain file storage for a world record on an rclone path (game module supplies it). Null = unavailable. */
+		std::function<Result<std::shared_ptr<ILogStore>>(const std::string& Fs)> OpenRemoteLogStore;
+		/** Wait before trusting a commit on rclone storage (must exceed twice the provider's listing delay). */
+		TimeMs RemoteSettleMs = Seconds(10);
 		/** Wall clock used for token expiry / refresh. Null → SystemClock per call. */
 		const IClock* Clock = nullptr;
 		/** Opens an object store on an rclone path (remote:folder). Supplied by the game module: core knows no rclone. Null = unavailable. */
