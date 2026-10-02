@@ -658,6 +658,19 @@ sw::WorldSession& USharedWorldSubsystem::EnsureSession(FSharedWorldRuntime& Runt
 
 void USharedWorldSubsystem::Play(const FString& WorldId)
 {
+	// Every player must be able to read the world record and upload saves before connecting (anyone may have to take
+	// over as host). A world on a provider this PC hasn't linked goes to linking first, whatever the provider.
+	if (const sw::WorldEntry* E = Settings.Find(Std(WorldId)))
+	{
+		const bool bWorldUnlinked = E->Provider.Kind == sw::ProviderKind::Rclone && E->Provider.Remote.empty();
+		const bool bSavesUnlinked = E->Provider.Kind != sw::ProviderKind::Rclone && !E->SaveBackend.empty() && E->SaveRemote.empty();
+		if (bWorldUnlinked || bSavesUnlinked)
+		{
+			UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=play_needs_link world=%s"), *WorldId);
+			OnSaveLinkRequested.Broadcast(WorldId);
+			return;
+		}
+	}
 	FSharedWorldRuntime* Runtime = FindRuntime(WorldId);
 	if (!Runtime || Runtime->bCreating)
 	{
@@ -2501,10 +2514,10 @@ void USharedWorldSubsystem::ShowSessionErrorDialog(const FString& WorldId, const
 		else if (E && E->Provider.Kind == sw::ProviderKind::Rclone) Label = ToFString(E->Provider.Label.empty() ? E->Provider.Backend : E->Provider.Label);
 		FSharedWorldModalSpec Link;
 		Link.Tone = ESharedWorldTone::Warning;
-		Link.Title = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostTitle", "Link {0} to host this world"), FText::FromString(Label));
+		Link.Title = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostTitle", "Link {0} to play this world"), FText::FromString(Label));
 		Link.Body = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostBody",
-			"This world keeps its saves on {0}. Connect {0} and pick the folder your friend shared with you, then you can host. "
-			"You can still join whenever someone else is hosting."), FText::FromString(Label));
+			"This world is stored on {0}. Every player links {0} before playing, so anyone can take over as host: "
+			"connect {0}, then pick the folder the owner shared with you (with edit access)."), FText::FromString(Label));
 		Link.ConfirmLabel = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostGo", "Link {0}"), FText::FromString(Label));
 		Link.CancelLabel = NSLOCTEXT("SharedWorld", "LinkToHostLater", "Not now");
 		Link.ConfirmRole = ESharedWorldButtonRole::Config;

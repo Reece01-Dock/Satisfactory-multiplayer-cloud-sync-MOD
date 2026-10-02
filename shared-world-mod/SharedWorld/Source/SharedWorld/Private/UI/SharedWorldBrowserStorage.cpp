@@ -598,7 +598,7 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 	// ---- actions, by state
 	UVerticalBox* Buttons = WidgetTree->ConstructWidget<UVerticalBox>();
 	Host->AddChildToVerticalBox(Buttons)->SetPadding(FMargin(0.f, 16.f, 0.f, 0.f));
-	enum class EAct : uint8 { Reconfigure, Disconnect, Connect, SetActive, RcloneTest, RcloneDisconnect, UseForSaves };
+	enum class EAct : uint8 { Reconfigure, Disconnect, Connect, SetActive, RcloneTest, RcloneDisconnect, UseForSaves, MoveHere };
 	auto AddButton = [&](ESharedWorldButtonRole Role, const FText& Label, EAct Act)
 	{
 		TObjectPtr<UTextBlock> L;
@@ -611,6 +611,7 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		case EAct::RcloneTest: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageRcloneTest); B->SetIsEnabled(!bRcloneTestRunning); break;
 		case EAct::RcloneDisconnect: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageRcloneDisconnect); break;
 		case EAct::UseForSaves: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageUseForSaves); break;
+		case EAct::MoveHere: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageMoveWorldsHere); break;
 		default: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageConnectSelected); break;
 		}
 		Buttons->AddChildToVerticalBox(B)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
@@ -627,6 +628,18 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		if (!P->bActive && P->bVerified)
 		{
 			AddButton(ESharedWorldButtonRole::Config, NSLOCTEXT("SharedWorld", "SetActive", "Set as Active"), EAct::UseForSaves);
+		}
+		else if (P->bActive)
+		{
+			// Already active: still offer to bring over worlds that live elsewhere (e.g. still on GitHub).
+			for (const FRcloneConnection& C : FRcloneConnections::Load())
+			{
+				if (C.CatalogId == P->ProviderId && WorldsToMove(C).Num() > 0)
+				{
+					AddButton(ESharedWorldButtonRole::Config, FText::Format(NSLOCTEXT("SharedWorld", "MoveHereN", "Move My Worlds Here ({0})"), FText::AsNumber(WorldsToMove(C).Num())), EAct::MoveHere);
+					break;
+				}
+			}
 		}
 		AddButton(ESharedWorldButtonRole::Secondary, bRcloneTestRunning ? NSLOCTEXT("SharedWorld", "Testing", "Testing...")
 			: NSLOCTEXT("SharedWorld", "TestConnection", "Test Connection"), EAct::RcloneTest);
@@ -808,14 +821,26 @@ void USharedWorldBrowserWidget::OnStorageUseForSaves()
 	bStorageNoticeOk = true;
 	StorageNotice = FString::Printf(TEXT("%s is now active: new worlds save here."), *Conn.Label);
 	QueueStorageRefresh();
+	OfferMoveWorlds(Conn);
+}
 
-	// Worlds this player owns whose saves are somewhere else. Shared worlds belong to a friend, so they are left alone.
+TArray<FString> USharedWorldBrowserWidget::WorldsToMove(const FRcloneConnection& Conn) const
+{
+	// Worlds this player owns that are not stored on Conn yet. Shared worlds belong to a friend, so they are left alone.
 	TArray<FString> ToMove;
+	USharedWorldSubsystem* S = SW();
+	if (!S) return ToMove;
 	for (const sw::WorldEntry& E : S->GetConfiguredWorlds())
 	{
 		const bool bAlreadyThere = E.Provider.Kind == sw::ProviderKind::Rclone && SharedWorldUe::ToFString(E.Provider.Remote) == Conn.Fs();
 		if (E.Relation == sw::WorldRelation::Owned && !bAlreadyThere) ToMove.Add(SharedWorldUe::ToFString(E.WorldId));
 	}
+	return ToMove;
+}
+
+void USharedWorldBrowserWidget::OfferMoveWorlds(const FRcloneConnection& Conn)
+{
+	const TArray<FString> ToMove = WorldsToMove(Conn);
 	if (ToMove.Num() == 0) return;
 
 	FSharedWorldModalSpec Spec;
@@ -948,4 +973,16 @@ void USharedWorldBrowserWidget::OnRcloneSelfTest()
 			}
 		});
 	});
+}
+
+void USharedWorldBrowserWidget::OnStorageMoveWorldsHere()
+{
+	for (const FRcloneConnection& C : FRcloneConnections::Load())
+	{
+		if (C.CatalogId == SelectedProviderId)
+		{
+			OfferMoveWorlds(C);
+			return;
+		}
+	}
 }

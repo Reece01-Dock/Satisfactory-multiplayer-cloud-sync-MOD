@@ -203,6 +203,12 @@ private:
 	UFUNCTION() void OnStorageUseForSaves();
 	/** Moves the listed worlds' saves one after another, reporting progress in the storage notice. */
 	void MoveWorldsSequentially(TArray<FString> WorldIds, FString RemoteName, int32 Index, int32 Failed);
+	/** Asks whether to move the player's own worlds that are not on Conn yet (no-op when there are none). */
+	void OfferMoveWorlds(const struct FRcloneConnection& Conn);
+	TArray<FString> WorldsToMove(const struct FRcloneConnection& Conn) const;
+	UFUNCTION() void OnStorageMoveWorldsHere();
+	/** World Details > Storage: move the selected world to the active provider. */
+	UFUNCTION() void OnDetailsMoveToActive();
 	FString LastMoveError;
 	/** Layout hook for later: a connected provider that is not the active one. Switching is not implemented yet. */
 	UFUNCTION() void OnStorageSetActive();

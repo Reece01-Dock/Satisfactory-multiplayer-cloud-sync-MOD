@@ -14,6 +14,7 @@
 #include "UI/SharedWorldWorldCard.h"
 #include "Components/UniformGridPanel.h"
 #include "Components/UniformGridSlot.h"
+#include "Misc/Guid.h"
 #include "Rclone/RcloneObjectStore.h"
 #include "Rclone/RcloneProviders.h"
 #include "Rclone/RcloneRuntime.h"
@@ -335,15 +336,77 @@ void USharedWorldBrowserWidget::AddDetailsStorage(UVerticalBox* Col, const FShar
 				FText::FromString(SaveLabel))
 			: NSLOCTEXT("SharedWorld", "StNote", "The latest save of this world is kept here so any player can pick it up. Manage the account under Shared Worlds Settings.")));
 	Col->AddChildToVerticalBox(Note)->SetPadding(FMargin(2.f, 4.f, 0.f, 0.f));
+
+	// ---- move this world (record, locks, history and saves) to the active provider
+	if (Entry->Relation == sw::WorldRelation::Owned)
+	{
+		const FString Active = FRcloneConnections::GetDefaultSaveRemote();
+		for (const FRcloneConnection& C : FRcloneConnections::Load())
+		{
+			if (C.RemoteName != Active) continue;
+			const bool bAlreadyThere = bRcloneWorld && LinkedRemote == C.Fs();
+			if (!bAlreadyThere)
+			{
+				TObjectPtr<UTextBlock> L;
+				UButton* Move = MakeRoleButton(WidgetTree, ESharedWorldButtonRole::Config, L,
+					FText::Format(NSLOCTEXT("SharedWorld", "StMoveTo", "Move This World to {0}"), FText::FromString(C.Label)), 15, FMargin(16.f, 9.f));
+				Move->SetToolTipText(FText::Format(NSLOCTEXT("SharedWorld", "StMoveToTip",
+					"Copies everything (who can play, who is hosting, history and saves) to {0}. The old copy is kept but frozen. Nobody can be playing it while it moves."),
+					FText::FromString(C.Label)));
+				Move->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnDetailsMoveToActive);
+				if (UVerticalBoxSlot* MS = Col->AddChildToVerticalBox(Move))
+				{
+					MS->SetPadding(FMargin(0.f, 12.f, 0.f, 0.f));
+					MS->SetHorizontalAlignment(HAlign_Left);
+				}
+			}
+			break;
+		}
+	}
+	if (!SaveLinkNotice.IsEmpty() && !bRcloneSaves && !bRcloneWorld)
+	{
+		UTextBlock* N = MakeText(WidgetTree, FontSmall + 1, TextMuted);
+		N->SetText(FText::FromString(SaveLinkNotice));
+		Col->AddChildToVerticalBox(N)->SetPadding(FMargin(2.f, 6.f, 0.f, 0.f));
+	}
 	if (!bRcloneSaves && !bRcloneWorld) return;
 
 	// ---- link / relink this PC to the world's save storage
 	UTextBlock* LinkHead = MakeText(WidgetTree, FontBody, TextPrimary, true);
 	LinkHead->SetText(bLinked ? NSLOCTEXT("SharedWorld", "StRelink", "Change the link") : FText::Format(NSLOCTEXT("SharedWorld", "StLinkHead", "Link {0}"), FText::FromString(SaveLabel)));
 	Col->AddChildToVerticalBox(LinkHead)->SetPadding(FMargin(2.f, 16.f, 0.f, 2.f));
+	// How a friend gets read + upload access depends on what kind of storage it is (same flow for every provider).
+	FText AccessHow;
+	{
+		static const TSet<FString> KeyBased = { TEXT("s3"), TEXT("b2"), TEXT("azureblob"), TEXT("azurefiles"), TEXT("google cloud storage"),
+			TEXT("swift"), TEXT("oracleobjectstorage"), TEXT("qingstor"), TEXT("storj"), TEXT("sia") };
+		static const TSet<FString> ServerBased = { TEXT("sftp"), TEXT("ftp"), TEXT("smb"), TEXT("webdav"), TEXT("hdfs"), TEXT("seafile") };
+		if (KeyBased.Contains(LinkBackend))
+		{
+			AccessHow = FText::Format(NSLOCTEXT("SharedWorld", "StAccessKey",
+				"Before you can play: the owner gives you an access key for the bucket with read and write access. Connect {0} in Settings > Storage with that key, then link here."),
+				FText::FromString(SaveLabel));
+		}
+		else if (ServerBased.Contains(LinkBackend))
+		{
+			AccessHow = FText::Format(NSLOCTEXT("SharedWorld", "StAccessServer",
+				"Before you can play: the owner gives you a login on the {0} server that can read and write the world's folder. Connect it in Settings > Storage, then link here."),
+				FText::FromString(SaveLabel));
+		}
+		else
+		{
+			AccessHow = FText::Format(NSLOCTEXT("SharedWorld", "StAccessShare",
+				"Before you can play: the owner shares the world's folder \"{1}\" with you in {0} with edit access. Connect your own {0} in Settings > Storage, then link here."),
+				FText::FromString(SaveLabel), FText::FromString(Item.Id()));
+		}
+	}
+	UTextBlock* Access = MakeText(WidgetTree, FontSmall, TextPrimary);
+	Access->SetText(AccessHow);
+	Col->AddChildToVerticalBox(Access)->SetPadding(FMargin(2.f, 0.f, 0.f, 6.f));
 	UTextBlock* LinkHelp = MakeText(WidgetTree, FontSmall, TextMuted);
 	LinkHelp->SetText(FText::Format(NSLOCTEXT("SharedWorld", "StLinkHelp",
-		"Type the folder that contains this world's folder \"{0}\" (leave it empty if your friend shared that folder with you directly), then pick your connection."),
+		"Type the folder that contains the world's folder \"{0}\" (leave it empty if the world's folder was shared with you directly), then pick your connection. "
+		"The mod checks you can read the world and upload to it before linking."),
 		FText::FromString(Item.Id())));
 	Col->AddChildToVerticalBox(LinkHelp)->SetPadding(FMargin(2.f, 0.f, 0.f, 8.f));
 
@@ -407,7 +470,7 @@ void USharedWorldBrowserWidget::LinkWorldSaves(const FString& RemoteName)
 	if (RemoteName.IsEmpty())
 	{
 		const FString LinkErr = S->SetWorldSaveRemote(WorldId, FString());
-		SaveLinkNotice = LinkErr.IsEmpty() ? FString(TEXT("Unlinked. You can still join while someone else hosts.")) : LinkErr;
+		SaveLinkNotice = LinkErr.IsEmpty() ? FString(TEXT("Unlinked. Link it again before playing this world.")) : LinkErr;
 		ScheduleRebuild();
 		return;
 	}
@@ -422,35 +485,69 @@ void USharedWorldBrowserWidget::LinkWorldSaves(const FString& RemoteName)
 		return;
 	}
 	const FString Remote = RemoteName + TEXT(":") + Folder;
-	SaveLinkNotice = TEXT("Checking for this world's save files...");
+	const sw::WorldEntry* Entry = S->FindWorldEntry(WorldId);
+	const bool bWholeWorld = Entry && Entry->Provider.Kind == sw::ProviderKind::Rclone;
+	const FString Label = Entry ? SharedWorldUe::ToFString(bWholeWorld
+		? (Entry->Provider.Label.empty() ? Entry->Provider.Backend : Entry->Provider.Label)
+		: (Entry->SaveLabel.empty() ? Entry->SaveBackend : Entry->SaveLabel)) : FString(TEXT("the storage"));
+	SaveLinkNotice = TEXT("Checking that you can read and upload to this world's folder...");
 	ScheduleRebuild();
 
-	// Look before linking, so a wrong folder is caught now rather than when the player tries to host.
+	// Every player must be able to read the world and upload to it (anyone may take over as host), so the link is only
+	// made after proving both, whatever the provider: find the world, then write and remove a small test file.
 	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
-	FRcloneRuntime::RunDetached([Weak, WorldId, Remote]()
+	FRcloneRuntime::RunDetached([Weak, WorldId, Remote, bWholeWorld, Label]()
 	{
 		FString Fs = Remote;
 		if (!Fs.EndsWith(TEXT(":"))) Fs += TEXT("/");
 		Fs += WorldId;
-		FRcloneObjectStore Store(Fs);
-		auto Listed = Store.List();
-		const int32 Count = Listed ? static_cast<int32>(Listed->size()) : -1;
-		const FString Problem = Listed ? FString() : FString(UTF8_TO_TCHAR(Listed.Err().Message.c_str()));
-		FRcloneRuntime::PostToGameThread([Weak, WorldId, Remote, Fs, Count, Problem]()
+		FString Problem;
+		int32 Found = 0;
+		if (bWholeWorld)
+		{
+			FRcloneLogStore Record(Fs + TEXT("/record"));
+			auto Entries = Record.List("log");
+			if (!Entries) Problem = FString::Printf(TEXT("Couldn't read the world in %s: %s"), *Fs, UTF8_TO_TCHAR(Entries.Err().Message.c_str()));
+			else if (Entries->empty()) Problem = FString::Printf(TEXT("No world found in %s. Check the folder, and that the owner shared the world's folder with you."), *Fs);
+			else Found = static_cast<int32>(Entries->size());
+		}
+		else
+		{
+			FRcloneObjectStore Saves(Fs);
+			auto Listed = Saves.List();
+			if (!Listed) Problem = FString::Printf(TEXT("Couldn't read %s: %s"), *Fs, UTF8_TO_TCHAR(Listed.Err().Message.c_str()));
+			else if (Listed->empty()) Problem = FString::Printf(TEXT("No save files found in %s. Check the folder, and that the owner shared the world's folder with you."), *Fs);
+			else Found = static_cast<int32>(Listed->size());
+		}
+		if (Problem.IsEmpty())
+		{
+			// Upload test: view-only access is not enough to host.
+			FRcloneLogStore Probe(Fs);
+			const std::string Name = "link-check-" + std::string(TCHAR_TO_UTF8(*FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower()));
+			auto Wrote = Probe.Create("linkcheck", Name, "ok");
+			if (!Wrote)
+			{
+				Problem = FString::Printf(TEXT("You can see this world but can't upload to it. Ask the owner to give you edit access to the world's folder in %s, then link again."), *Label);
+			}
+			else
+			{
+				(void)Probe.Delete("linkcheck", *Wrote);
+			}
+		}
+		FRcloneRuntime::PostToGameThread([Weak, WorldId, Remote, Fs, Found, Problem, Label]()
 		{
 			USharedWorldBrowserWidget* Self = Weak.Get();
 			USharedWorldSubsystem* Sub = Self ? Self->SW() : nullptr;
 			if (!Sub) return;
-			if (Count < 0)
+			if (!Problem.IsEmpty())
 			{
-				Self->SaveLinkNotice = FString::Printf(TEXT("Couldn't read %s: %s"), *Fs, *Problem.Left(200));
+				Self->SaveLinkNotice = Problem.Left(400);
 			}
 			else
 			{
 				const FString LinkErr = Sub->SetWorldSaveRemote(WorldId, Remote);
 				Self->SaveLinkNotice = !LinkErr.IsEmpty() ? LinkErr
-					: Count > 0 ? FString::Printf(TEXT("Linked. Found %d save file%s in %s."), Count, Count == 1 ? TEXT("") : TEXT("s"), *Fs)
-					: FString::Printf(TEXT("Linked, but %s is empty. If this world already has saves, check the folder."), *Fs);
+					: FString::Printf(TEXT("Linked to %s. You can read and upload to this world, so you can join and take over hosting. Press Play when ready."), *Label);
 			}
 			Self->ScheduleRebuild();
 		});
@@ -483,4 +580,22 @@ void USharedWorldBrowserWidget::AddDetailsAdvanced(UVerticalBox* Col, const FSha
 			P->AddChildToVerticalBox(D)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
 		}
 	}
+}
+
+void USharedWorldBrowserWidget::OnDetailsMoveToActive()
+{
+	USharedWorldSubsystem* S = SW();
+	const FString Active = FRcloneConnections::GetDefaultSaveRemote();
+	if (!S || SelectedWorldId.IsEmpty() || Active.IsEmpty()) return;
+	SaveLinkNotice = TEXT("Moving the world... keep the game open. This can take a few minutes for large saves.");
+	ScheduleRebuild();
+	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
+	S->MoveWorldTo(SelectedWorldId, Active, [Weak](bool bOk, const FString& Message)
+	{
+		if (USharedWorldBrowserWidget* Self = Weak.Get())
+		{
+			Self->SaveLinkNotice = Message;
+			Self->ScheduleRebuild();
+		}
+	});
 }
