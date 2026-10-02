@@ -17,11 +17,20 @@
 #>
 param(
 	[string]$Tag = '',
+	[switch]$Latest,
 	[string[]]$PluginDir = @(),
 	[string]$WorkDir = (Join-Path $PSScriptRoot 'work')
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Prefer the portable toolchain from get-toolchain.ps1 when it exists, and keep Go's caches inside the workspace
+# so a build never touches system settings or the player's own Go setup.
+$portable = Join-Path $PSScriptRoot 'work\toolchain'
+$extraPaths = @((Join-Path $portable 'go\bin'), (Join-Path $portable 'winlibs\mingw64\bin')) | Where-Object { Test-Path $_ }
+if ($extraPaths) { $env:PATH = ($extraPaths -join ';') + ';' + $env:PATH }
+$env:GOPATH = Join-Path $WorkDir 'gopath'
+$env:GOCACHE = Join-Path $WorkDir 'gocache'
 
 function Need([string]$Name, [string]$Hint)
 {
@@ -36,6 +45,12 @@ if (-not $PluginDir -or $PluginDir.Count -eq 0)
 	$PluginDir = @((Resolve-Path (Join-Path $PSScriptRoot '..\..\shared-world-mod\SharedWorld')).Path)
 }
 
+$pinFile = Join-Path $PSScriptRoot 'RCLONE_VERSION'
+if (-not $Tag -and -not $Latest -and (Test-Path $pinFile))
+{
+	# The committed pin keeps every build of the engine reproducible. Move it deliberately with -Latest or -Tag.
+	$Tag = (Get-Content $pinFile -TotalCount 1).Trim()
+}
 if (-not $Tag)
 {
 	$release = Invoke-RestMethod -Uri 'https://api.github.com/repos/rclone/rclone/releases/latest' -Headers @{ 'User-Agent' = 'shared-world-build' }
@@ -46,16 +61,24 @@ Write-Host "Building librclone from rclone $Tag"
 $src = Join-Path $WorkDir 'rclone-src'
 if (Test-Path $src) { Remove-Item $src -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
-git clone --depth 1 --branch $Tag https://github.com/rclone/rclone.git $src
-if ($LASTEXITCODE -ne 0) { throw "git clone of rclone $Tag failed" }
+# Native tools print progress on stderr; in Windows PowerShell 5.1 that would abort a 'Stop' script, so judge by exit code.
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+git clone --depth 1 --branch $Tag https://github.com/rclone/rclone.git $src 2>&1 | Out-Host
+$cloneExit = $LASTEXITCODE
+$ErrorActionPreference = $previousPreference
+if ($cloneExit -ne 0) { throw "git clone of rclone $Tag failed (exit $cloneExit)" }
 
 $out = Join-Path $WorkDir 'librclone.dll'
 Push-Location $src
 try
 {
 	$env:CGO_ENABLED = '1'
-	go build --buildmode=c-shared -trimpath -ldflags '-s -w' -o $out github.com/rclone/rclone/librclone
-	if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
+	$ErrorActionPreference = 'Continue'
+	go build --buildmode=c-shared -trimpath -ldflags '-s -w' -o $out github.com/rclone/rclone/librclone 2>&1 | Out-Host
+	$buildExit = $LASTEXITCODE
+	$ErrorActionPreference = $previousPreference
+	if ($buildExit -ne 0) { throw "go build failed (exit $buildExit)" }
 }
 finally { Pop-Location }
 

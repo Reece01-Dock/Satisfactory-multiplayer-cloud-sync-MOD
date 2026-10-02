@@ -121,6 +121,14 @@ Built so far (all safe with no DLL present):
 * Settings > Diagnostics: "rclone engine" card with status and a self-test that round-trips a 3 MB file through the store
   on rclone's local backend (no account, no network).
 
+Verified on this PC: librclone (rclone v1.75.1, Go 1.27.1) built with the portable toolchain, called directly (version, copyfile, stat incl. missing = item null, list, deletefile, missing directory = 404), and packaged/installed with the mod (package 44.6 MB zipped; the DLL is 71 MB unpacked, so check the Mod Repository size limit before publishing). The in-game self-test on the Diagnostics tab is the remaining check.
+
 Not built yet: provider discovery (`config/providers`), OAuth / `config/create` flows, wiring a provider into world
 creation and sync, conditional-write repositories for S3/R2/WebDAV/SFTP, rclone.conf encryption (planned: random
 `RCLONE_CONFIG_PASS` held in the Windows credential store like the GitHub token).
+
+Reproducible engine build: `tools/rclone/RCLONE_VERSION` pins the rclone release (currently v1.75.1);
+`tools/rclone/get-toolchain.ps1` fetches a checksum-verified portable Go + MinGW-w64 into the gitignored
+`tools/rclone/work`, and `tools/rclone/build-librclone.ps1` builds and installs the DLL. rclone's source is not vendored
+into the mod: it is hundreds of MB with its dependencies and UBT cannot compile Go; the pinned tag is the source of truth
+and the built DLL (with rclone's MIT notice) ships inside the mod.
