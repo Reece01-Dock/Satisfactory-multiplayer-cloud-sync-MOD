@@ -118,6 +118,8 @@ void USharedWorldStorageProviderCard::Setup(const FSharedWorldStorageProvider& P
 		Desc->SetText(FText::FromString(P.Description));
 		Desc->SetAutoWrapText(false);
 		Desc->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+		Desc->SetToolTipText(FText::FromString(P.Description));
+		Name->SetToolTipText(FText::FromString(P.DisplayName));
 		Text->AddChildToVerticalBox(Desc)->SetPadding(FMargin(0.f, 2.f, 0.f, 0.f));
 		if (UHorizontalBoxSlot* S = Inner->AddChildToHorizontalBox(Text))
 		{
@@ -154,6 +156,7 @@ void USharedWorldStorageProviderCard::Setup(const FSharedWorldStorageProvider& P
 		Name->SetText(FText::FromString(P.DisplayName));
 		Name->SetAutoWrapText(false);
 		Name->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+		Name->SetToolTipText(FText::FromString(P.DisplayName));
 		Text->AddChildToVerticalBox(Name);
 		if (UVerticalBoxSlot* BadgeSlot = Text->AddChildToVerticalBox(BadgeRow(WidgetTree, P)))
 		{
@@ -168,8 +171,11 @@ void USharedWorldStorageProviderCard::Setup(const FSharedWorldStorageProvider& P
 		}
 		USizeBox* DescBox = WidgetTree->ConstructWidget<USizeBox>();
 		DescBox->SetMinDesiredHeight(40.f); // two lines, so short and long descriptions take the same room
+		DescBox->SetMaxDesiredHeight(40.f); // and never more: longer text is cut, the full text is on the tooltip
+		DescBox->SetClipping(EWidgetClipping::ClipToBounds);
 		UTextBlock* Desc = MakeText(WidgetTree, FontSmall, TextMuted);
 		Desc->SetText(FText::FromString(P.Description));
+		Desc->SetToolTipText(FText::FromString(P.Description));
 		DescBox->AddChild(Desc);
 		Inner->AddChildToVerticalBox(DescBox)->SetPadding(FMargin(12.f, 0.f, 12.f, 8.f));
 

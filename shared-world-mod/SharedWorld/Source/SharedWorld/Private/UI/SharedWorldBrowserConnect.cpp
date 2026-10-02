@@ -9,6 +9,8 @@
 #include "Async/Async.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/EditableTextBox.h"
+#include "Components/UniformGridPanel.h"
+#include "Components/UniformGridSlot.h"
 #include "Components/ScrollBox.h"
 #include "HAL/PlatformProcess.h"
 #include "Rclone/RcloneProviders.h"
@@ -190,6 +192,9 @@ void USharedWorldBrowserWidget::RebuildConnectPage()
 	{
 		UTextBlock* L = MakeText(WidgetTree, FontBody, TextPrimary, true);
 		L->SetText(FText::FromString(bRequired ? Text + TEXT("  *") : Text));
+		L->SetAutoWrapText(false);
+		L->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+		L->SetToolTipText(FText::FromString(Text));
 		Col->AddChildToVerticalBox(L)->SetPadding(FMargin(0.f, 0.f, 0.f, Help.IsEmpty() ? 6.f : 2.f));
 		if (!Help.IsEmpty())
 		{
@@ -198,7 +203,16 @@ void USharedWorldBrowserWidget::RebuildConnectPage()
 			Col->AddChildToVerticalBox(H)->SetPadding(FMargin(0.f, 0.f, 0.f, 6.f));
 		}
 	};
-	auto Chip = [&](UHorizontalBox* Row, const FString& OptionName, const FString& Value, const FString& Text, bool bActive, const FString& Tip)
+	// Choice buttons sit in a fixed-column grid: every cell has a bounded width, so long values end in "..." instead of
+	// widening the page. The full value and rclone's explanation are on the tooltip.
+	auto NewChipGrid = [&]()
+	{
+		UUniformGridPanel* G = WidgetTree->ConstructWidget<UUniformGridPanel>();
+		G->SetSlotPadding(FMargin(0.f, 0.f, 8.f, 8.f));
+		Col->AddChildToVerticalBox(G)->SetPadding(FMargin(0.f, 0.f, 0.f, 6.f));
+		return G;
+	};
+	auto Chip = [&](UUniformGridPanel* Row, int32 Index, const FString& OptionName, const FString& Value, const FString& Text, bool bActive, const FString& Tip)
 	{
 		UButton* Btn = MakeTabButton(WidgetTree, FText::FromString(Text), bActive);
 		USharedWorldRowBinder* Binder = NewObject<USharedWorldRowBinder>(this);
@@ -208,8 +222,11 @@ void USharedWorldBrowserWidget::RebuildConnectPage()
 		Binder->ConnectValue = Value;
 		RowBinders.Add(Binder);
 		Btn->OnClicked.AddDynamic(Binder, &USharedWorldRowBinder::OnClicked);
-		if (!Tip.IsEmpty()) Btn->SetToolTipText(FText::FromString(Tip));
-		Row->AddChildToHorizontalBox(Btn)->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+		Btn->SetToolTipText(FText::FromString(Tip.IsEmpty() ? Text : Text + TEXT("\n") + Tip));
+		if (UUniformGridSlot* Cell = Row->AddChildToUniformGrid(Btn, Index / 4, Index % 4))
+		{
+			Cell->SetHorizontalAlignment(HAlign_Fill);
+		}
 	};
 
 	bool bAnyAdvanced = false;
@@ -227,20 +244,19 @@ void USharedWorldBrowserWidget::RebuildConnectPage()
 		if (O.IsBool())
 		{
 			const FString Current = Typed ? *Typed : O.Default;
-			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-			Col->AddChildToVerticalBox(Row)->SetPadding(FMargin(0.f, 0.f, 0.f, 14.f));
-			Chip(Row, O.Name, TEXT("true"), TEXT("Yes"), Current == TEXT("true"), FString());
-			Chip(Row, O.Name, TEXT("false"), TEXT("No"), Current != TEXT("true"), FString());
+			UUniformGridPanel* Row = NewChipGrid();
+			Chip(Row, 0, O.Name, TEXT("true"), TEXT("Yes"), Current == TEXT("true"), FString());
+			Chip(Row, 1, O.Name, TEXT("false"), TEXT("No"), Current != TEXT("true"), FString());
 		}
 		else if (O.bExclusive && O.Examples.Num() > 0 && O.Examples.Num() <= 8)
 		{
 			const FString Current = Typed ? *Typed : O.Default;
-			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-			Col->AddChildToVerticalBox(Row)->SetPadding(FMargin(0.f, 0.f, 0.f, 14.f));
+			UUniformGridPanel* Row = NewChipGrid();
+			int32 Index = 0;
 			for (const FRcloneOptionExample& E : O.Examples)
 			{
 				const FString Shown = E.Value.IsEmpty() ? FString(TEXT("Default")) : E.Value;
-				Chip(Row, O.Name, E.Value, Shown, E.Value == Current, ShortHelp(E.Help));
+				Chip(Row, Index++, O.Name, E.Value, Shown, E.Value == Current, ShortHelp(E.Help));
 			}
 		}
 		else
@@ -265,9 +281,7 @@ void USharedWorldBrowserWidget::RebuildConnectPage()
 
 	if (bAnyAdvanced)
 	{
-		UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-		Col->AddChildToVerticalBox(Row)->SetPadding(FMargin(0.f, 0.f, 0.f, 14.f));
-		Chip(Row, FString(), FString(), bConnectAdvanced ? TEXT("Hide advanced settings") : TEXT("Show advanced settings"), bConnectAdvanced, FString());
+		Chip(NewChipGrid(), 0, FString(), FString(), bConnectAdvanced ? TEXT("Hide advanced settings") : TEXT("Show advanced settings"), bConnectAdvanced, FString());
 	}
 
 	UButton* Unused = nullptr;

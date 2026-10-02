@@ -156,6 +156,7 @@ namespace SharedWorldUi
 		OutLabel = MakeText(Tree, FontSize, TextColor, true);
 		OutLabel->SetText(Label);
 		OutLabel->SetAutoWrapText(false);
+		OutLabel->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		OutLabel->SetJustification(ETextJustify::Center);
 		B->AddChild(OutLabel);
 		return B;
@@ -207,6 +208,7 @@ namespace SharedWorldUi
 		OutLabel = MakeText(Tree, FontSize, TextPrimary, false);
 		OutLabel->SetText(Label);
 		OutLabel->SetAutoWrapText(false);
+		OutLabel->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		B->AddChild(OutLabel);
 		return B;
 	}
@@ -230,6 +232,7 @@ namespace SharedWorldUi
 		UTextBlock* T = MakeText(Tree, FontSize, bActive ? TextPrimary : TextMuted, bActive);
 		T->SetText(Label);
 		T->SetAutoWrapText(false);
+		T->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		B->AddChild(T);
 		StyleTabButton(B, bActive);
 		return B;
@@ -310,6 +313,7 @@ namespace SharedWorldUi
 		UTextBlock* L = MakeText(Tree, FontSize, ToneColor(Tone), false);
 		L->SetText(Label);
 		L->SetAutoWrapText(false);
+		L->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		L->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
 		if (UHorizontalBoxSlot* S = H->AddChildToHorizontalBox(L))
 		{
@@ -553,6 +557,7 @@ namespace SharedWorldUi
 		UTextBlock* N = MakeText(Tree, FontBody, TextPrimary, true);
 		N->SetText(FText::FromString(Name));
 		N->SetAutoWrapText(false);
+		N->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		N->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
 		Text->AddChildToVerticalBox(N);
 		if (!Role.IsEmpty())
@@ -678,6 +683,7 @@ namespace SharedWorldUi
 		UBorder* P = MakePanel(Tree, ToneColor(Tone), Clear, FMargin(8.f, 2.f), 4.f, 0.f);
 		UTextBlock* T = MakeText(Tree, FontSize, TextOnAccent, true);
 		T->SetAutoWrapText(false);
+		T->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		T->SetText(Label);
 		P->SetContent(T);
 		return P;
@@ -696,6 +702,7 @@ namespace SharedWorldUi
 		UTextBlock* L = MakeText(Tree, FontSmall + 1, TextMuted);
 		L->SetText(Label);
 		L->SetAutoWrapText(false);
+		L->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		L->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
 		if (!LabelTooltip.IsEmpty()) L->SetToolTipText(LabelTooltip);
 		USizeBox* LB = Tree->ConstructWidget<USizeBox>();
@@ -763,6 +770,7 @@ namespace SharedWorldUi
 		OutLabel = MakeText(Tree, FontSize, TextPrimary, true);
 		OutLabel->SetText(Label);
 		OutLabel->SetAutoWrapText(false);
+		OutLabel->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		OutLabel->SetJustification(ETextJustify::Left);
 		OutButton->AddChild(OutLabel);
 		Box->AddChild(OutButton);
@@ -776,6 +784,7 @@ namespace SharedWorldUi
 		OutLabel = MakeText(Tree, 22, TextPrimary, true);
 		OutLabel->SetText(Label);
 		OutLabel->SetAutoWrapText(false);
+		OutLabel->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box
 		B->AddChild(OutLabel);
 		return B;
 	}

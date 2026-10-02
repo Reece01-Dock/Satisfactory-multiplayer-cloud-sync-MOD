@@ -352,7 +352,10 @@ FRcloneResult RcloneActions::CreateRemote(const FString& RemoteName, const FStri
 		NextOpt->SetStringField(TEXT("state"), State);
 		NextOpt->SetStringField(TEXT("result"), Answer);
 		const TSharedRef<FJsonObject> Next = MakeShared<FJsonObject>();
+		// rclone requires name, type and parameters on every step, not only the first.
 		Next->SetStringField(TEXT("name"), RemoteName);
+		Next->SetStringField(TEXT("type"), BackendType);
+		Next->SetObjectField(TEXT("parameters"), MakeShared<FJsonObject>());
 		Next->SetObjectField(TEXT("opt"), NextOpt);
 		R = Rc.Rpc(TEXT("config/create"), ToJson(Next));
 	}
