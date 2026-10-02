@@ -57,6 +57,8 @@ public:
 	/** "Connect" on a card: GitHub starts the real link flow; display-only providers show a development-safe message. */
 	void ConnectProvider(const FString& ProviderId);
 	void ViewAllProviders();
+	/** Connect form: picks a value for a choice / yes-no setting, or toggles the advanced settings (Name empty). */
+	void SetConnectOption(const FString& Name, const FString& Value);
 
 	/** Called by save picker rows. */
 	void OnSavePicked(const FString& SaveName, const FString& DisplayName);
@@ -67,7 +69,7 @@ public:
 	UPROPERTY() TArray<TObjectPtr<class USharedWorldRowBinder>> RowBinders;
 
 private:
-	enum class EPage : uint8 { Main, Details, CreatePickSave, CreateName, CreateReview, Creating, JoinFriend, Settings, Welcome, LinkGitHub };
+	enum class EPage : uint8 { Main, Details, CreatePickSave, CreateName, CreateReview, Creating, JoinFriend, Settings, Welcome, LinkGitHub, ConnectProvider };
 
 	// ---- core / main browser
 	void RebuildMain();
@@ -116,6 +118,11 @@ private:
 	void RebuildJoinPage();
 	void RebuildSettingsPage();
 	void RebuildLinkGitHubPage();
+	// Connect an rclone-backed provider (SharedWorldBrowserConnect.cpp)
+	void RebuildConnectPage();
+	void BeginConnect(const FString& ProviderId);
+	void HarvestConnectFields();
+	void RunConnect();
 	void AddJoinInvites(UVerticalBox* Col, const FSharedWorldDiscoverySnapshot& Snap);
 	void AddJoinFriendWorlds(UVerticalBox* Col, const FSharedWorldDiscoverySnapshot& Snap);
 	void AddJoinCodeForm(UVerticalBox* Col);
@@ -184,6 +191,10 @@ private:
 	UFUNCTION() void OnStorageLearnMore();
 	UFUNCTION() void OnStorageReconfigure();
 	UFUNCTION() void OnStorageConnectSelected();
+	UFUNCTION() void OnConnectSubmit();
+	UFUNCTION() void OnConnectLearnMore();
+	UFUNCTION() void OnStorageRcloneTest();
+	UFUNCTION() void OnStorageRcloneDisconnect();
 	/** Layout hook for later: a connected provider that is not the active one. Switching is not implemented yet. */
 	UFUNCTION() void OnStorageSetActive();
 
@@ -244,6 +255,18 @@ private:
 	UPROPERTY() TObjectPtr<UWidget> ProviderBrowserAnchor;
 	UPROPERTY() TObjectPtr<UEditableTextBox> StorageSearchInput;
 	FString SelectedProviderId;
+	// ---- Connect form state (survives page rebuilds)
+	FString ConnectProviderId;
+	TMap<FString, FString> ConnectValues;
+	UPROPERTY() TMap<FString, TObjectPtr<UEditableTextBox>> ConnectBoxes;
+	FString ConnectError;
+	FString ConnectStatus;
+	int32 ConnectAttempt = 0;
+	bool bConnectBusy = false;
+	bool bConnectAdvanced = false;
+	bool bRcloneTestRunning = false;
+	/** "View all" pressed: list every storage backend rclone ships, not just the curated cards. */
+	bool bShowAllProviders = false;
 	FString StorageSearch;
 	/** Development-safe message for display-only providers. */
 	FString StorageNotice;

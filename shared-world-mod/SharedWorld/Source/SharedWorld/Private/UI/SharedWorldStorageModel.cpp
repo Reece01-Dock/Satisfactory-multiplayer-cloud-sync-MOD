@@ -1,6 +1,9 @@
 #include "UI/SharedWorldStorageModel.h"
 
+#include "Rclone/RcloneProviders.h"
+#include "Rclone/RcloneRuntime.h"
 #include "SharedWorldSubsystem.h"
+#include "SharedWorldTypes.h"
 
 FString FSharedWorldStorageProvider::FileOperationsText() const
 {
@@ -47,7 +50,7 @@ bool FSharedWorldStorageCatalog::Matches(const FSharedWorldStorageProvider& P, c
 
 namespace
 {
-	FSharedWorldStorageProvider Placeholder(const TCHAR* Id, const TCHAR* Name, const TCHAR* Desc, const TCHAR* Mono,
+	FSharedWorldStorageProvider Curated(const TCHAR* Id, const TCHAR* Name, const TCHAR* Desc, const TCHAR* Mono,
 		const FLinearColor& Color, ESharedWorldStorageDifficulty Difficulty, bool bRecommended,
 		const TCHAR* Category, std::initializer_list<const TCHAR*> Tags)
 	{
@@ -61,7 +64,20 @@ namespace
 		P.bRecommended = bRecommended;
 		P.Category = Category;
 		for (const TCHAR* T : Tags) P.Tags.Add(T);
-		return P; // bAvailable / bConnected stay false: display-only ("coming soon") until a real backend exists
+		return P;
+	}
+
+	FString Initials(const FString& Name)
+	{
+		TArray<FString> Words;
+		Name.ParseIntoArray(Words, TEXT(" "), true);
+		FString Out;
+		for (const FString& W : Words)
+		{
+			if (W.Len() > 0 && FChar::IsAlnum(W[0])) Out.AppendChar(FChar::ToUpper(W[0]));
+			if (Out.Len() >= 2) break;
+		}
+		return Out.IsEmpty() ? Name.Left(1).ToUpper() : Out;
 	}
 }
 
@@ -74,7 +90,7 @@ FSharedWorldStorageCatalog FSharedWorldStorageCatalog::Build(USharedWorldSubsyst
 	const FString Login = SW.GetGitHubLogin();
 	const bool bGitConnected = !Login.IsEmpty();
 
-	// ---- GitHub: the one live cloud provider. Every identity field comes from real state.
+	// ---- GitHub: the one provider that can currently run a whole world (repository + leases). Real state only.
 	{
 		FSharedWorldStorageProvider P;
 		P.ProviderId = TEXT("github");
@@ -132,22 +148,97 @@ FSharedWorldStorageCatalog FSharedWorldStorageCatalog::Build(USharedWorldSubsyst
 		C.Providers.Add(P);
 	}
 
-	// ---- display-only entries (no backend yet; rclone discovery will replace these)
+	// ---- rclone-backed providers. Everything below is driven by what rclone itself reports.
+	FRcloneRuntime& Rc = FRcloneRuntime::Get();
+	const bool bEngine = Rc.IsInstalled() && Rc.EnsureLoaded();
+	const TArray<FRcloneConnection> Connections = FRcloneConnections::Load();
+	if (bEngine && !FRcloneProviders::Get().IsValid())
+	{
+		FString LoadError; // parsed once per session; failure just leaves the curated cards display-only
+		if (!FRcloneProviders::Load(LoadError))
+		{
+			UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld/rclone] event=providers_failed detail=%s"), *LoadError);
+		}
+	}
+	const TSharedPtr<const TArray<FRcloneBackend>> Backends = bEngine ? FRcloneProviders::Get() : nullptr;
+
+	auto Wire = [&](FSharedWorldStorageProvider& P, const FString& Type, const FString& Preset)
+	{
+		P.RcloneType = Type;
+		P.RclonePreset = Preset;
+		P.bAvailable = bEngine && Backends.IsValid(); // without the engine the card stays display-only
+		P.bExtendedCapsKnown = false; // varies per rclone backend; never guessed
+		if (Backends.IsValid())
+		{
+			for (const FRcloneBackend& B : *Backends)
+			{
+				if (B.Name == Type) { P.bOAuth = B.bOAuth; break; }
+			}
+		}
+		for (const FRcloneConnection& Conn : Connections)
+		{
+			if (Conn.CatalogId == P.ProviderId)
+			{
+				++P.ConnectionCount;
+				P.bConnected = true;
+				P.bRuntimeBacked = true;
+				if (P.Location.IsEmpty()) P.Location = Conn.Folder;
+				if (Conn.bVerified)
+				{
+					// Observed, not assumed: the connect / test probe wrote, read back (hash-checked) and deleted a file.
+					P.bVerified = true;
+					P.VerifiedUtc = Conn.VerifiedUtc;
+					P.bHasCapabilityInfo = true;
+					P.bSupportsRead = P.bSupportsWrite = P.bSupportsDelete = P.bSupportsList = true;
+					P.bSupportsHash = true;
+					P.ProviderTier = TEXT("Save files only");
+				}
+			}
+		}
+	};
+	auto AddCurated = [&](FSharedWorldStorageProvider P, const TCHAR* Type, const TCHAR* Preset)
+	{
+		Wire(P, Type, Preset);
+		C.Providers.Add(MoveTemp(P));
+	};
+
 	using D = ESharedWorldStorageDifficulty;
-	C.Providers.Add(Placeholder(TEXT("google-drive"), TEXT("Google Drive"), TEXT("Reliable cloud storage with plenty of space."), TEXT("GD"),
-		FLinearColor(0.16f, 0.50f, 0.32f, 1.f), D::Easy, true, TEXT("Cloud storage"), { TEXT("google"), TEXT("drive") }));
-	C.Providers.Add(Placeholder(TEXT("onedrive"), TEXT("OneDrive"), TEXT("Microsoft cloud storage with seamless integration."), TEXT("OD"),
-		FLinearColor(0.10f, 0.42f, 0.80f, 1.f), D::Easy, true, TEXT("Cloud storage"), { TEXT("microsoft"), TEXT("office") }));
-	C.Providers.Add(Placeholder(TEXT("dropbox"), TEXT("Dropbox"), TEXT("Simple and reliable cloud storage."), TEXT("DB"),
-		FLinearColor(0.05f, 0.35f, 0.92f, 1.f), D::Easy, true, TEXT("Cloud storage"), {}));
-	C.Providers.Add(Placeholder(TEXT("cloudflare-r2"), TEXT("Cloudflare R2"), TEXT("High performance object storage."), TEXT("R2"),
-		FLinearColor(0.88f, 0.45f, 0.12f, 1.f), D::Advanced, false, TEXT("Object storage"), { TEXT("s3"), TEXT("s3-compatible"), TEXT("cloudflare"), TEXT("bucket") }));
-	C.Providers.Add(Placeholder(TEXT("amazon-s3"), TEXT("Amazon S3"), TEXT("Scalable cloud storage with global availability."), TEXT("S3"),
-		FLinearColor(0.72f, 0.18f, 0.18f, 1.f), D::Advanced, false, TEXT("Object storage"), { TEXT("s3"), TEXT("aws"), TEXT("amazon"), TEXT("bucket") }));
-	C.Providers.Add(Placeholder(TEXT("webdav"), TEXT("WebDAV"), TEXT("Connect to any WebDAV server."), TEXT("DAV"),
-		FLinearColor(0.42f, 0.34f, 0.80f, 1.f), D::Advanced, false, TEXT("Self-hosted"), { TEXT("nextcloud"), TEXT("owncloud"), TEXT("server") }));
-	C.Providers.Add(Placeholder(TEXT("sftp"), TEXT("SFTP"), TEXT("Use your own SFTP server or NAS."), TEXT(">_"),
-		FLinearColor(0.10f, 0.55f, 0.40f, 1.f), D::Advanced, false, TEXT("Self-hosted"), { TEXT("ssh"), TEXT("nas"), TEXT("server") }));
+	AddCurated(Curated(TEXT("google-drive"), TEXT("Google Drive"), TEXT("Reliable cloud storage with plenty of space."), TEXT("GD"),
+		FLinearColor(0.16f, 0.50f, 0.32f, 1.f), D::Easy, true, TEXT("Cloud storage"), { TEXT("google"), TEXT("drive") }), TEXT("drive"), TEXT(""));
+	AddCurated(Curated(TEXT("onedrive"), TEXT("OneDrive"), TEXT("Microsoft cloud storage with seamless integration."), TEXT("OD"),
+		FLinearColor(0.10f, 0.42f, 0.80f, 1.f), D::Easy, true, TEXT("Cloud storage"), { TEXT("microsoft"), TEXT("office") }), TEXT("onedrive"), TEXT(""));
+	AddCurated(Curated(TEXT("dropbox"), TEXT("Dropbox"), TEXT("Simple and reliable cloud storage."), TEXT("DB"),
+		FLinearColor(0.05f, 0.35f, 0.92f, 1.f), D::Easy, true, TEXT("Cloud storage"), {}), TEXT("dropbox"), TEXT(""));
+	AddCurated(Curated(TEXT("cloudflare-r2"), TEXT("Cloudflare R2"), TEXT("High performance object storage."), TEXT("R2"),
+		FLinearColor(0.88f, 0.45f, 0.12f, 1.f), D::Advanced, false, TEXT("Object storage"), { TEXT("s3"), TEXT("s3-compatible"), TEXT("cloudflare"), TEXT("bucket") }), TEXT("s3"), TEXT("Cloudflare"));
+	AddCurated(Curated(TEXT("amazon-s3"), TEXT("Amazon S3"), TEXT("Scalable cloud storage with global availability."), TEXT("S3"),
+		FLinearColor(0.72f, 0.18f, 0.18f, 1.f), D::Advanced, false, TEXT("Object storage"), { TEXT("s3"), TEXT("aws"), TEXT("amazon"), TEXT("bucket") }), TEXT("s3"), TEXT("AWS"));
+	AddCurated(Curated(TEXT("webdav"), TEXT("WebDAV"), TEXT("Connect to any WebDAV server."), TEXT("DAV"),
+		FLinearColor(0.42f, 0.34f, 0.80f, 1.f), D::Advanced, false, TEXT("Self-hosted"), { TEXT("nextcloud"), TEXT("owncloud"), TEXT("server") }), TEXT("webdav"), TEXT(""));
+	AddCurated(Curated(TEXT("sftp"), TEXT("SFTP"), TEXT("Use your own SFTP server or NAS."), TEXT(">_"),
+		FLinearColor(0.10f, 0.55f, 0.40f, 1.f), D::Advanced, false, TEXT("Self-hosted"), { TEXT("ssh"), TEXT("nas"), TEXT("server") }), TEXT("sftp"), TEXT(""));
+
+	// Every other backend rclone ships: shown under "All providers". Names, settings and sign-in come from rclone.
+	static const TSet<FString> CuratedTypes = { TEXT("drive"), TEXT("onedrive"), TEXT("dropbox"), TEXT("s3"), TEXT("webdav"), TEXT("sftp") };
+	if (Backends.IsValid())
+	{
+		for (const FRcloneBackend& B : *Backends)
+		{
+			if (!FRcloneProviders::IsStorageBackend(B.Name) || CuratedTypes.Contains(B.Name)) continue;
+			FSharedWorldStorageProvider P;
+			P.ProviderId = TEXT("rclone-") + B.Name;
+			P.DisplayName = B.DisplayName();
+			P.Description = FString::Printf(TEXT("Store Shared World saves in %s."), *P.DisplayName);
+			P.IconMonogram = Initials(P.DisplayName);
+			P.IconColor = FLinearColor::MakeFromHSV8(static_cast<uint8>(GetTypeHash(B.Name) % 256), 120, 120);
+			P.Difficulty = B.bOAuth ? D::Easy : D::Advanced;
+			P.Category = TEXT("More providers");
+			P.Tags = { B.Name, B.Description };
+			P.bViewAllOnly = true;
+			Wire(P, B.Name, FString());
+			C.Providers.Add(MoveTemp(P));
+		}
+	}
 
 	// Active = what new Shared Worlds will actually use. Connected is tracked separately on each provider.
 	if (bGitConnected) C.ActiveProviderId = TEXT("github");
@@ -156,7 +247,8 @@ FSharedWorldStorageCatalog FSharedWorldStorageCatalog::Build(USharedWorldSubsyst
 	for (FSharedWorldStorageProvider& P : C.Providers)
 	{
 		// A provider can only be active if it is usable: an unlinked GitHub is the default choice but not "active".
-		P.bActive = (P.ProviderId == C.ActiveProviderId) && P.bConnected;
+		// rclone connections are never active yet: worlds do not store their saves there until that wiring exists.
+		P.bActive = (P.ProviderId == C.ActiveProviderId) && P.bConnected && !P.IsRcloneBacked();
 	}
 	return C;
 }

@@ -7,6 +7,11 @@ void USharedWorldRowBinder::OnClicked()
 {
 	if (USharedWorldBrowserWidget* B = Browser.Get())
 	{
+		if (TabKind == 4)
+		{
+			B->SetConnectOption(ConnectOption, ConnectValue);
+			return;
+		}
 		if (TabKind != 0)
 		{
 			B->SetTab(TabKind, TabIndex);

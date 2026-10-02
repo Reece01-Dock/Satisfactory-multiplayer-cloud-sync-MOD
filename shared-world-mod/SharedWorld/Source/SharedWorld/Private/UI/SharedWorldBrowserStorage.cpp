@@ -347,15 +347,21 @@ void USharedWorldBrowserWidget::PopulateProviderGrid(UVerticalBox* Host)
 	if (!S) return;
 	const FSharedWorldStorageCatalog Catalog = FSharedWorldStorageCatalog::Build(*S);
 
-	TArray<const FSharedWorldStorageProvider*> Recommended, Other;
+	const bool bSearching = !StorageSearch.TrimStartAndEnd().IsEmpty();
+	TArray<const FSharedWorldStorageProvider*> Recommended, Other, More;
 	for (const FSharedWorldStorageProvider& P : Catalog.Providers)
 	{
 		if (P.ProviderId == TEXT("local-folder")) continue; // shown as the active provider when in use
 		if (!FSharedWorldStorageCatalog::Matches(P, StorageSearch)) continue;
+		if (P.bViewAllOnly)
+		{
+			// Every other rclone backend: listed on "View all", when searched for, or once connected.
+			if (bShowAllProviders || bSearching || P.bConnected) More.Add(&P);
+			continue;
+		}
 		(P.bRecommended ? Recommended : Other).Add(&P);
 	}
-	const bool bSearching = !StorageSearch.TrimStartAndEnd().IsEmpty();
-	if (Recommended.Num() == 0 && Other.Num() == 0)
+	if (Recommended.Num() == 0 && Other.Num() == 0 && More.Num() == 0)
 	{
 		UTextBlock* T = MakeText(WidgetTree, FontBody + 1, TextMuted);
 		T->SetText(FText::Format(NSLOCTEXT("SharedWorld", "NoProviderMatch", "No storage providers match \"{0}\"."), FText::FromString(StorageSearch.TrimStartAndEnd())));
@@ -423,7 +429,8 @@ void USharedWorldBrowserWidget::PopulateProviderGrid(UVerticalBox* Host)
 		}
 	};
 	AddSection(NSLOCTEXT("SharedWorld", "RecommendedProviders", "Recommended Providers"), Recommended, false);
-	AddSection(NSLOCTEXT("SharedWorld", "OtherProviders", "Other Providers"), Other, !bSearching);
+	AddSection(NSLOCTEXT("SharedWorld", "OtherProviders", "Other Providers"), Other, !bSearching && !bShowAllProviders);
+	AddSection(FText::Format(NSLOCTEXT("SharedWorld", "AllProviders", "All Providers ({0})"), FText::AsNumber(More.Num())), More, false);
 }
 
 // ============================================================================ selected provider panel
@@ -482,6 +489,18 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 	Desc->SetText(FText::FromString(P->Description));
 	Host->AddChildToVerticalBox(Desc)->SetPadding(FMargin(0.f, 0.f, 0.f, 14.f));
 
+	// ---- rclone connection: what was really observed, plus where it stands today
+	if (P->IsRcloneBacked() && P->bConnected)
+	{
+		Host->AddChildToVerticalBox(MakeProgressRow(WidgetTree, P->bVerified ? ESharedWorldStep::Done : ESharedWorldStep::Pending,
+			P->bVerified ? NSLOCTEXT("SharedWorld", "RcVerified", "Read/write test passed")
+				: NSLOCTEXT("SharedWorld", "RcNotVerified", "Last read/write test failed")))->SetPadding(FMargin(0.f, 0.f, 0.f, 6.f));
+		UTextBlock* Note = MakeText(WidgetTree, FontSmall, TextMuted);
+		Note->SetText(NSLOCTEXT("SharedWorld", "RcNotYetWorlds",
+			"Connected for save files. Worlds don't store their saves here yet; that switch comes in a later update."));
+		Host->AddChildToVerticalBox(Note)->SetPadding(FMargin(0.f, 2.f, 0.f, 8.f));
+	}
+
 	// ---- live checks: only for a connected GitHub, only what was actually observed
 	if (bLiveGit)
 	{
@@ -514,6 +533,12 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 			NSLOCTEXT("SharedWorld", "TipRepo", "The repository that stores your worlds."));
 		AddKeyValueRow(Host, NSLOCTEXT("SharedWorld", "KvLocation", "Storage Location"), P->Location, TextPrimary, false,
 			NSLOCTEXT("SharedWorld", "TipLocation", "Where inside the provider your world data is kept."));
+		if (P->IsRcloneBacked())
+		{
+			AddKeyValueRow(Host, NSLOCTEXT("SharedWorld", "KvVerified", "Last Verified"),
+				P->bVerified ? RelativeTimeText(P->VerifiedUtc) : FString(TEXT("Not verified")), P->bVerified ? TextPrimary : TextMuted, false,
+				NSLOCTEXT("SharedWorld", "TipVerified", "When a test file was last written, read back and deleted."));
+		}
 		if (bLiveGit)
 		{
 			AddKeyValueRow(Host, NSLOCTEXT("SharedWorld", "KvChecked", "Last Checked"),
@@ -533,10 +558,11 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 			? NSLOCTEXT("SharedWorld", "CapsKnown", "What this provider supports. Not a live check.")
 			: NSLOCTEXT("SharedWorld", "CapsUnknown", "Confirmed once this provider is set up."));
 		Host->AddChildToVerticalBox(Cap)->SetPadding(FMargin(0.f, 0.f, 0.f, 10.f));
-		auto Flag = [&](const FText& Label, bool bOn, const FText& Tip)
+		auto Flag = [&](const FText& Label, bool bOn, const FText& Tip, bool bKnown = true)
 		{
-			const FString Value = !P->bHasCapabilityInfo ? FString(TEXT("Unknown")) : (bOn ? FString(TEXT("Supported")) : FString(TEXT("Not available")));
-			AddKeyValueRow(Host, Label, Value, (P->bHasCapabilityInfo && bOn) ? Ok : TextMuted, false, Tip);
+			const bool bHasInfo = P->bHasCapabilityInfo && bKnown;
+			const FString Value = !bHasInfo ? FString(TEXT("Unknown")) : (bOn ? FString(TEXT("Supported")) : FString(TEXT("Not available")));
+			AddKeyValueRow(Host, Label, Value, (bHasInfo && bOn) ? Ok : TextMuted, false, Tip);
 		};
 		AddKeyValueRow(Host, NSLOCTEXT("SharedWorld", "CapOps", "File Operations"),
 			P->bHasCapabilityInfo ? P->FileOperationsText() : FString(TEXT("Unknown")),
@@ -545,11 +571,11 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		Flag(NSLOCTEXT("SharedWorld", "CapHash", "Hash Support"), P->bSupportsHash,
 			NSLOCTEXT("SharedWorld", "TipHash", "Whether files can be verified by checksum."));
 		Flag(NSLOCTEXT("SharedWorld", "CapAtomic", "Atomic Writes"), P->bSupportsAtomicWrites,
-			NSLOCTEXT("SharedWorld", "TipAtomic", "Whether an upload replaces a file all at once, never half-written."));
+			NSLOCTEXT("SharedWorld", "TipAtomic", "Whether an upload replaces a file all at once, never half-written."), P->bExtendedCapsKnown);
 		Flag(NSLOCTEXT("SharedWorld", "CapCopy", "Server Side Copy"), P->bSupportsServerSideCopy,
-			NSLOCTEXT("SharedWorld", "TipCopy", "Whether copies can happen on the provider without downloading."));
+			NSLOCTEXT("SharedWorld", "TipCopy", "Whether copies can happen on the provider without downloading."), P->bExtendedCapsKnown);
 		Flag(NSLOCTEXT("SharedWorld", "CapQuota", "Quota Information"), P->bSupportsQuota,
-			NSLOCTEXT("SharedWorld", "TipQuota", "Whether free space can be read from the provider."));
+			NSLOCTEXT("SharedWorld", "TipQuota", "Whether free space can be read from the provider."), P->bExtendedCapsKnown);
 		AddKeyValueRow(Host, NSLOCTEXT("SharedWorld", "CapTier", "Provider Tier"),
 			P->ProviderTier.IsEmpty() ? FString(TEXT("Unknown")) : P->ProviderTier, P->ProviderTier.IsEmpty() ? TextMuted : TextPrimary, false,
 			NSLOCTEXT("SharedWorld", "TipTier", "How mature support for this provider is."));
@@ -559,14 +585,14 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 	{
 		UButton* Unused = nullptr;
 		Host->AddChildToVerticalBox(MakeNoticePanel(WidgetTree, ESharedWorldTone::Warning,
-			FText::FromString(StorageNotice), NSLOCTEXT("SharedWorld", "NotAvailableSub", "GitHub is the only storage provider you can use right now."), Unused))
+			FText::FromString(StorageNotice), FText::GetEmpty(), Unused))
 			->SetPadding(FMargin(0.f, 12.f, 0.f, 0.f));
 	}
 
 	// ---- actions, by state
 	UVerticalBox* Buttons = WidgetTree->ConstructWidget<UVerticalBox>();
 	Host->AddChildToVerticalBox(Buttons)->SetPadding(FMargin(0.f, 16.f, 0.f, 0.f));
-	enum class EAct : uint8 { Reconfigure, Disconnect, Connect, SetActive };
+	enum class EAct : uint8 { Reconfigure, Disconnect, Connect, SetActive, RcloneTest, RcloneDisconnect };
 	auto AddButton = [&](ESharedWorldButtonRole Role, const FText& Label, EAct Act)
 	{
 		TObjectPtr<UTextBlock> L;
@@ -576,6 +602,8 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		case EAct::Reconfigure: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageReconfigure); break;
 		case EAct::Disconnect: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnDisconnectGitHub); break;
 		case EAct::SetActive: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageSetActive); break;
+		case EAct::RcloneTest: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageRcloneTest); B->SetIsEnabled(!bRcloneTestRunning); break;
+		case EAct::RcloneDisconnect: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageRcloneDisconnect); break;
 		default: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageConnectSelected); break;
 		}
 		Buttons->AddChildToVerticalBox(B)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
@@ -585,6 +613,12 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		// The storage in use: nothing to "activate".
 		AddButton(ESharedWorldButtonRole::Secondary, NSLOCTEXT("SharedWorld", "ReconfigureGit", "Reconfigure GitHub"), EAct::Reconfigure);
 		AddButton(ESharedWorldButtonRole::Danger, NSLOCTEXT("SharedWorld", "DisconnectGit", "Disconnect"), EAct::Disconnect);
+	}
+	else if (P->IsRcloneBacked() && P->bConnected)
+	{
+		AddButton(ESharedWorldButtonRole::Secondary, bRcloneTestRunning ? NSLOCTEXT("SharedWorld", "Testing", "Testing...")
+			: NSLOCTEXT("SharedWorld", "TestConnection", "Test Connection"), EAct::RcloneTest);
+		AddButton(ESharedWorldButtonRole::Danger, NSLOCTEXT("SharedWorld", "DisconnectGit", "Disconnect"), EAct::RcloneDisconnect);
 	}
 	else if (P->bConnected && P->bAvailable && !P->bActive)
 	{
@@ -653,14 +687,30 @@ void USharedWorldBrowserWidget::ConnectProvider(const FString& ProviderId)
 		else QueueStorageRefresh();
 		return;
 	}
-	// Display-only provider: say so, never pretend to connect.
-	StorageNotice = TEXT("Provider setup is not available yet.");
+	if (USharedWorldSubsystem* S = SW())
+	{
+		const FSharedWorldStorageCatalog Catalog = FSharedWorldStorageCatalog::Build(*S);
+		if (const FSharedWorldStorageProvider* P = Catalog.Find(ProviderId); P && P->IsRcloneBacked())
+		{
+			if (!P->bAvailable)
+			{
+				StorageNotice = TEXT("The storage engine isn't installed in this build, so this provider can't be set up.");
+				QueueStorageRefresh();
+				return;
+			}
+			StorageNotice.Reset();
+			BeginConnect(ProviderId);
+			return;
+		}
+	}
+	StorageNotice = TEXT("This provider can't be set up yet.");
 	QueueStorageRefresh();
 }
 
 void USharedWorldBrowserWidget::ViewAllProviders()
 {
-	StorageNotice = TEXT("More storage providers will be added over time.");
+	bShowAllProviders = !bShowAllProviders;
+	StorageNotice.Reset();
 	QueueStorageRefresh();
 }
 

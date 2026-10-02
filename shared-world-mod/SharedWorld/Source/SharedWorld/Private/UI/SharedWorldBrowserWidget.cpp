@@ -1454,6 +1454,7 @@ void USharedWorldBrowserWidget::OnBackendChanged()
 	// refresh must never rebuild them. Everything else follows the backend through this event.
 	switch (Page)
 	{
+	case EPage::ConnectProvider: // typed credentials live in this form
 	case EPage::CreatePickSave:
 	case EPage::CreateName:
 	case EPage::CreateReview:
@@ -1532,6 +1533,7 @@ void USharedWorldBrowserWidget::RebuildPageNow()
 		case EPage::JoinFriend: RebuildJoinPage(); break;
 		case EPage::Settings: RebuildSettingsPage(); break;
 		case EPage::LinkGitHub: RebuildLinkGitHubPage(); break;
+		case EPage::ConnectProvider: RebuildConnectPage(); break;
 		case EPage::Main:
 		default: break;
 		}
@@ -1567,6 +1569,11 @@ bool USharedWorldBrowserWidget::HandleBack()
 		break;
 	case EPage::CreateReview:
 		Page = EPage::CreateName;
+		break;
+	case EPage::ConnectProvider:
+		HarvestConnectFields();
+		if (bConnectBusy) { ++ConnectAttempt; bConnectBusy = false; } // stop waiting; a late result is undone
+		Page = EPage::Settings;
 		break;
 	case EPage::Creating:
 		return true; // an upload is running: Back is ignored rather than abandoning it

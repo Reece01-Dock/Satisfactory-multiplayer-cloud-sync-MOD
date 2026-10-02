@@ -64,6 +64,20 @@ struct FSharedWorldStorageProvider
 	bool bSupportsServerSideCopy = false;
 	FString ProviderTier;
 
+	// ---- rclone wiring (empty RcloneType = GitHub / local folder / not wired)
+	FString RcloneType;   // rclone backend this card configures, e.g. "drive", "s3"
+	FString RclonePreset; // pre-selected sub-provider, e.g. S3 "provider" = "Cloudflare"
+	bool bOAuth = false;
+	/** Shown only in the expanded "All providers" view (every rclone backend that has no curated card). */
+	bool bViewAllOnly = false;
+	int32 ConnectionCount = 0;
+	bool IsRcloneBacked() const { return !RcloneType.IsEmpty(); }
+	/** Atomic writes / server-side copy / quota are known for this provider (false = shown as Unknown). */
+	bool bExtendedCapsKnown = true;
+	/** Last successful read/write test of the connection (rclone providers). */
+	FDateTime VerifiedUtc;
+	bool bVerified = false;
+
 	bool IsComingSoon() const { return !bAvailable; }
 	/** "Connect" for sign-in style providers, "Configure" for ones needing keys or an address. */
 	FText ConnectVerb() const;

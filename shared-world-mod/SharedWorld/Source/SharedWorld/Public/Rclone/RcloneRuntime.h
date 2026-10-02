@@ -40,6 +40,8 @@ public:
 	/** Engine version string (e.g. "v1.68.2"), empty when unavailable. */
 	FString Version();
 
+	/** librclone.dll is present next to the mod (cheap file check; does not load it). */
+	bool IsInstalled() const;
 	FString LibraryPath() const;
 	/** Per-user rclone.conf (provider tokens live here; see docs for the planned encryption). */
 	FString ConfigPath() const;

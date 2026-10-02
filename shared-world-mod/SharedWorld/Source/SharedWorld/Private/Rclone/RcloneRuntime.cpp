@@ -170,3 +170,9 @@ FString FRcloneRuntime::Version()
 	}
 	return CachedVersion;
 }
+
+bool FRcloneRuntime::IsInstalled() const
+{
+	const FString Path = LibraryPath();
+	return !Path.IsEmpty() && FPaths::FileExists(Path);
+}
