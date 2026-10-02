@@ -568,6 +568,7 @@ void USharedWorldBrowserWidget::AddSettingsSync(UVerticalBox* Col)
 
 void USharedWorldBrowserWidget::AddSettingsDiagnostics(UVerticalBox* Col)
 {
+	AddRcloneEngineCard(Col);
 	USharedWorldSubsystem* S = SW();
 	UButton* Unused = nullptr;
 	Col->AddChildToVerticalBox(MakeNoticePanel(WidgetTree, ESharedWorldTone::Warning,

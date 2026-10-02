@@ -130,6 +130,7 @@ private:
 	void AddKeyValueRow(UVerticalBox* Col, const FText& Label, const FString& Value, const FLinearColor& ValueColor, bool bWrap = false, const FText& Tip = FText::GetEmpty());
 	void AddSettingsSync(UVerticalBox* Col);
 	void AddSettingsDiagnostics(UVerticalBox* Col);
+	void AddRcloneEngineCard(UVerticalBox* Col);
 	UEditableTextBox* AddTextField(UVerticalBox* Col, const FText& Hint, const FString& Initial);
 
 	// ---- world details (SharedWorldBrowserDetails.cpp)
@@ -174,6 +175,7 @@ private:
 	UFUNCTION() void OnMoreOpenFolder();
 	UFUNCTION() void OnDismissError();
 	UFUNCTION() void OnCopyDiagnostics();
+	UFUNCTION() void OnRcloneSelfTest();
 	UFUNCTION() void OnStorageManage();
 	UFUNCTION() void OnStorageChangeProvider();
 	UFUNCTION() void OnStorageSearchChanged(const FText& Text);
@@ -245,6 +247,9 @@ private:
 	FString StorageSearch;
 	/** Development-safe message for display-only providers. */
 	FString StorageNotice;
+	/** Result lines of the last rclone engine self-test (Diagnostics tab). */
+	FString RcloneSelfTestText;
+	bool bRcloneSelfTestRunning = false;
 	FString PageSignature;
 	bool bStorageGrid = true;
 	/** Width the selected-provider panel was given this build (grid columns are sized from the rest). */

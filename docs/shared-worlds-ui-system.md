@@ -103,3 +103,24 @@ revisions are all built on it. `IObjectStore` (the .sav bytes) is immutable and 
 rclone can implement `IObjectStore` for any provider. It cannot provide a trustworthy CAS on providers without
 conditional writes (notably Google Drive), so moving the *repository* (leases) onto such a provider would weaken the
 split-brain guarantees. The storage UI is ready for either approach; the backend choice is pending.
+
+## rclone engine (foundation, in progress)
+
+Decision: rclone owns **save files only** on every provider, and full-world operation (leases included) is added only on
+providers with real conditional writes (S3/R2, WebDAV with ETag, SFTP rename). Google Drive / OneDrive / Dropbox are
+save-file providers; the coordination repository stays on a CAS-capable backend.
+
+Built so far (all safe with no DLL present):
+
+* `tools/rclone/build-librclone.ps1`: fetches the rclone source (latest release tag, or `-Tag`), builds `librclone.dll`
+  with `go build --buildmode=c-shared` (needs Go + MinGW gcc on the build machine only) and installs it, with rclone's
+  MIT notice and a version/hash file, into `Binaries/ThirdParty/rclone`. `SharedWorld.Build.cs` stages it when present.
+* `FRcloneRuntime`: loads librclone at run time (never linked, never unloaded), per-user `rclone.conf`, thread-safe `Rpc`.
+* `FRcloneObjectStore : sw::IObjectStore`: Put (hash-checked) / PutBlob / Get (never leaves a partial file) / Has / Remove /
+  List over any rclone remote, using `operations/*` RPCs. Rejects unsafe ids. Size-verified uploads.
+* Settings > Diagnostics: "rclone engine" card with status and a self-test that round-trips a 3 MB file through the store
+  on rclone's local backend (no account, no network).
+
+Not built yet: provider discovery (`config/providers`), OAuth / `config/create` flows, wiring a provider into world
+creation and sync, conditional-write repositories for S3/R2/WebDAV/SFTP, rclone.conf encryption (planned: random
+`RCLONE_CONFIG_PASS` held in the Windows credential store like the GitHub token).

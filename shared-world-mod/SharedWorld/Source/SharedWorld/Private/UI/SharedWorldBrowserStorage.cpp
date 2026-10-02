@@ -11,7 +11,10 @@
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/UniformGridPanel.h"
 #include "Components/UniformGridSlot.h"
+#include "Async/Async.h"
 #include "HAL/PlatformProcess.h"
+#include "Rclone/RcloneRuntime.h"
+#include "Rclone/RcloneSelfTest.h"
 #include "Misc/ConfigCacheIni.h"
 #include "SharedWorldSubsystem.h"
 #include "SharedWorldTypes.h"
@@ -731,4 +734,81 @@ void USharedWorldBrowserWidget::OnStorageSetActive()
 	// The panel layout supports "connected but not active" already; the switch itself is a later backend task.
 	StorageNotice = TEXT("Switching the active storage is not available yet.");
 	QueueStorageRefresh();
+}
+
+// ============================================================================ rclone engine (Diagnostics tab)
+
+void USharedWorldBrowserWidget::AddRcloneEngineCard(UVerticalBox* Col)
+{
+	FRcloneRuntime& Rc = FRcloneRuntime::Get();
+	const bool bInstalled = FPaths::FileExists(Rc.LibraryPath());
+	const bool bLoaded = Rc.IsAvailable();
+
+	UBorder* Card = MakePanel(WidgetTree, RowFill, PanelEdge, FMargin(16.f, 14.f), RadiusM, 1.f);
+	Col->AddChildToVerticalBox(Card)->SetPadding(FMargin(0.f, 0.f, 0.f, 12.f));
+	UVerticalBox* In = WidgetTree->ConstructWidget<UVerticalBox>();
+	Card->SetContent(In);
+
+	UHorizontalBox* Head = WidgetTree->ConstructWidget<UHorizontalBox>();
+	In->AddChildToVerticalBox(Head)->SetPadding(FMargin(0.f, 0.f, 0.f, 6.f));
+	UTextBlock* Title = MakeText(WidgetTree, 17, TextPrimary, true);
+	Title->SetText(NSLOCTEXT("SharedWorld", "RcloneEngine", "rclone engine"));
+	if (UHorizontalBoxSlot* TS = Head->AddChildToHorizontalBox(Title))
+	{
+		TS->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		TS->SetVerticalAlignment(VAlign_Center);
+	}
+	UBorder* Status = bLoaded
+		? MakePill(WidgetTree, ESharedWorldTone::Healthy, FText::Format(NSLOCTEXT("SharedWorld", "RcloneReady", "Ready {0}"), FText::FromString(Rc.Version())), 13)
+		: (bInstalled
+			? MakePill(WidgetTree, ESharedWorldTone::Inactive, NSLOCTEXT("SharedWorld", "RcloneInstalled", "Installed"), 13)
+			: MakePill(WidgetTree, ESharedWorldTone::Warning, NSLOCTEXT("SharedWorld", "RcloneMissing", "Not installed"), 13));
+	Head->AddChildToHorizontalBox(Status)->SetVerticalAlignment(VAlign_Center);
+
+	UTextBlock* Desc = MakeText(WidgetTree, FontSmall + 1, TextMuted);
+	Desc->SetText(bInstalled
+		? NSLOCTEXT("SharedWorld", "RcloneDesc", "Storage providers such as Google Drive, S3 and SFTP run through the rclone engine. The self-test round-trips a file through it on this PC; it needs no account and uses no network.")
+		: NSLOCTEXT("SharedWorld", "RcloneDescMissing", "The rclone engine (librclone.dll) is not part of this install yet. It is built from the rclone source with tools/rclone/build-librclone.ps1 and placed in Binaries/ThirdParty/rclone."));
+	In->AddChildToVerticalBox(Desc)->SetPadding(FMargin(0.f, 0.f, 0.f, 12.f));
+
+	TObjectPtr<UTextBlock> L;
+	UButton* Run = MakeRoleButton(WidgetTree, ESharedWorldButtonRole::Secondary, L,
+		bRcloneSelfTestRunning ? NSLOCTEXT("SharedWorld", "RcloneTesting", "Testing...") : NSLOCTEXT("SharedWorld", "RcloneRun", "Run self-test"), 15, FMargin(20.f, 9.f));
+	Run->SetIsEnabled(bInstalled && !bRcloneSelfTestRunning);
+	Run->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnRcloneSelfTest);
+	In->AddChildToVerticalBox(Run)->SetHorizontalAlignment(HAlign_Left);
+
+	if (!RcloneSelfTestText.IsEmpty())
+	{
+		UBorder* Out = MakePanel(WidgetTree, FLinearColor(0.03f, 0.035f, 0.045f, 0.9f), PanelEdge, FMargin(12.f, 10.f), RadiusS, 1.f);
+		In->AddChildToVerticalBox(Out)->SetPadding(FMargin(0.f, 12.f, 0.f, 0.f));
+		UTextBlock* T = MakeText(WidgetTree, FontSmall, TextPrimary);
+		T->SetText(FText::FromString(RcloneSelfTestText));
+		Out->SetContent(T);
+	}
+}
+
+void USharedWorldBrowserWidget::OnRcloneSelfTest()
+{
+	if (bRcloneSelfTestRunning) return;
+	bRcloneSelfTestRunning = true;
+	RcloneSelfTestText = TEXT("Running...");
+	ListScroll = nullptr;
+	ScheduleRebuild();
+	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
+	Async(EAsyncExecution::ThreadPool, [Weak]()
+	{
+		const FRcloneSelfTestResult R = RunRcloneSelfTest(); // blocking; off the game thread
+		const FString Text = R.Summary();
+		AsyncTask(ENamedThreads::GameThread, [Weak, Text]()
+		{
+			if (USharedWorldBrowserWidget* Self = Weak.Get())
+			{
+				Self->bRcloneSelfTestRunning = false;
+				Self->RcloneSelfTestText = Text;
+				Self->ListScroll = nullptr;
+				Self->ScheduleRebuild();
+			}
+		});
+	});
 }
