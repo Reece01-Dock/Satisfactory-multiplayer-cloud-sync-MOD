@@ -18,6 +18,8 @@
 #include "Rclone/RcloneSelfTest.h"
 #include "Misc/ConfigCacheIni.h"
 #include "SharedWorldSubsystem.h"
+#include "SharedWorldUeConvert.h"
+#include "UI/SharedWorldModal.h"
 #include "SharedWorldTypes.h"
 #include "TimerManager.h"
 #include "UI/SharedWorldStorageModel.h"
@@ -467,14 +469,6 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		Pills->AddChildToHorizontalBox(MakeSolidBadge(WidgetTree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "ActiveBadge", "ACTIVE"), 12))
 			->SetVerticalAlignment(VAlign_Center);
 	}
-	if (P->bDefaultForSaves)
-	{
-		if (UHorizontalBoxSlot* DS = Pills->AddChildToHorizontalBox(MakeSolidBadge(WidgetTree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "SavesBadge", "USED FOR SAVES"), 12)))
-		{
-			DS->SetVerticalAlignment(VAlign_Center);
-			DS->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
-		}
-	}
 	if (UHorizontalBoxSlot* PS = Pills->AddChildToHorizontalBox(P->bConnected
 		? MakePill(WidgetTree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "Connected", "Connected"), 13)
 		: MakePill(WidgetTree, ESharedWorldTone::Inactive, NSLOCTEXT("SharedWorld", "NotConnected", "Not Connected"), 13)))
@@ -621,21 +615,18 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		}
 		Buttons->AddChildToVerticalBox(B)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
 	};
-	if (P->bActive && bLiveGit)
+	if (bLiveGit)
 	{
-		// The storage in use: nothing to "activate".
+		// GitHub always holds the world records; "active" says whether new saves go here too.
+		if (!P->bActive) AddButton(ESharedWorldButtonRole::Config, NSLOCTEXT("SharedWorld", "SetActive", "Set as Active"), EAct::SetActive);
 		AddButton(ESharedWorldButtonRole::Secondary, NSLOCTEXT("SharedWorld", "ReconfigureGit", "Reconfigure GitHub"), EAct::Reconfigure);
 		AddButton(ESharedWorldButtonRole::Danger, NSLOCTEXT("SharedWorld", "DisconnectGit", "Disconnect"), EAct::Disconnect);
 	}
 	else if (P->IsRcloneBacked() && P->bConnected)
 	{
-		if (P->bDefaultForSaves)
+		if (!P->bActive && P->bVerified)
 		{
-			AddButton(ESharedWorldButtonRole::Secondary, NSLOCTEXT("SharedWorld", "StopUsingForSaves", "Stop Using for Saves"), EAct::UseForSaves);
-		}
-		else if (P->bVerified)
-		{
-			AddButton(ESharedWorldButtonRole::Config, NSLOCTEXT("SharedWorld", "UseForSaves", "Use for Saves"), EAct::UseForSaves);
+			AddButton(ESharedWorldButtonRole::Config, NSLOCTEXT("SharedWorld", "SetActive", "Set as Active"), EAct::UseForSaves);
 		}
 		AddButton(ESharedWorldButtonRole::Secondary, bRcloneTestRunning ? NSLOCTEXT("SharedWorld", "Testing", "Testing...")
 			: NSLOCTEXT("SharedWorld", "TestConnection", "Test Connection"), EAct::RcloneTest);
@@ -803,26 +794,81 @@ void USharedWorldBrowserWidget::OnStorageReconfigure()
 
 void USharedWorldBrowserWidget::OnStorageUseForSaves()
 {
-	// Toggles the default for NEW worlds only. Existing worlds keep their saves where they are (moving them is separate).
-	FString Remote;
+	// "Set as Active" on an rclone provider: new worlds save here, and the player's existing worlds can follow.
+	USharedWorldSubsystem* S = SW();
+	if (!S) return;
+	FRcloneConnection Conn;
+	bool bFound = false;
 	for (const FRcloneConnection& C : FRcloneConnections::Load())
 	{
-		if (C.CatalogId == SelectedProviderId) { Remote = C.RemoteName; break; }
+		if (C.CatalogId == SelectedProviderId) { Conn = C; bFound = true; break; }
 	}
-	if (Remote.IsEmpty()) return;
-	const bool bWasDefault = FRcloneConnections::GetDefaultSaveRemote() == Remote;
-	FRcloneConnections::SetDefaultSaveRemote(bWasDefault ? FString() : Remote);
+	if (!bFound) return;
+	FRcloneConnections::SetDefaultSaveRemote(Conn.RemoteName);
 	bStorageNoticeOk = true;
-	StorageNotice = bWasDefault
-		? FString(TEXT("New worlds will keep their saves with the world record again."))
-		: FString(TEXT("New worlds will keep their saves here."));
+	StorageNotice = FString::Printf(TEXT("%s is now active: new worlds save here."), *Conn.Label);
 	QueueStorageRefresh();
+
+	// Worlds this player owns whose saves are somewhere else. Shared worlds belong to a friend, so they are left alone.
+	TArray<FString> ToMove;
+	for (const sw::WorldEntry& E : S->GetConfiguredWorlds())
+	{
+		if (E.Relation == sw::WorldRelation::Owned && SharedWorldUe::ToFString(E.SaveRemote) != Conn.Fs()) ToMove.Add(SharedWorldUe::ToFString(E.WorldId));
+	}
+	if (ToMove.Num() == 0) return;
+
+	FSharedWorldModalSpec Spec;
+	Spec.Tone = ESharedWorldTone::Healthy;
+	Spec.Title = FText::Format(NSLOCTEXT("SharedWorld", "MoveTitle", "Move your existing worlds to {0}?"), FText::FromString(Conn.Label));
+	Spec.Body = FText::Format(NSLOCTEXT("SharedWorld", "MoveBody",
+		"{0} of your worlds keep their saves somewhere else. Moving copies their saves to {1} and they save there from now on. "
+		"The old copies stay where they are. Friends who host these worlds will need to link {1}."),
+		FText::AsNumber(ToMove.Num()), FText::FromString(Conn.Label));
+	Spec.ConfirmLabel = NSLOCTEXT("SharedWorld", "MoveGo", "Move Them");
+	Spec.CancelLabel = NSLOCTEXT("SharedWorld", "MoveLater", "Only New Worlds");
+	Spec.ConfirmRole = ESharedWorldButtonRole::Config;
+	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
+	const FString RemoteName = Conn.RemoteName;
+	Spec.OnConfirm = [Weak, ToMove, RemoteName]()
+	{
+		if (USharedWorldBrowserWidget* Self = Weak.Get()) Self->MoveWorldsSequentially(ToMove, RemoteName, 0, 0);
+	};
+	USharedWorldModal::Show(GetOwningPlayer(), Spec);
+}
+
+void USharedWorldBrowserWidget::MoveWorldsSequentially(TArray<FString> WorldIds, FString RemoteName, int32 Index, int32 Failed)
+{
+	USharedWorldSubsystem* S = SW();
+	if (!S) return;
+	if (Index >= WorldIds.Num())
+	{
+		bStorageNoticeOk = Failed == 0;
+		StorageNotice = Failed == 0
+			? FString::Printf(TEXT("Moved %d world%s. They save to the active storage from now on."), WorldIds.Num(), WorldIds.Num() == 1 ? TEXT("") : TEXT("s"))
+			: FString::Printf(TEXT("Moved %d of %d worlds. %s"), WorldIds.Num() - Failed, WorldIds.Num(), *LastMoveError);
+		QueueStorageRefresh();
+		return;
+	}
+	bStorageNoticeOk = true;
+	StorageNotice = FString::Printf(TEXT("Moving saves (%d of %d)... keep the game open."), Index + 1, WorldIds.Num());
+	QueueStorageRefresh();
+	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
+	S->MoveWorldSavesTo(WorldIds[Index], RemoteName, [Weak, WorldIds, RemoteName, Index, Failed](bool bOk, const FString& Message)
+	{
+		USharedWorldBrowserWidget* Self = Weak.Get();
+		if (!Self) return;
+		if (!bOk) Self->LastMoveError = Message;
+		Self->MoveWorldsSequentially(WorldIds, RemoteName, Index + 1, Failed + (bOk ? 0 : 1));
+	});
 }
 
 void USharedWorldBrowserWidget::OnStorageSetActive()
 {
-	// The panel layout supports "connected but not active" already; the switch itself is a later backend task.
-	StorageNotice = TEXT("Switching the active storage is not available yet.");
+	// "Set as Active" on GitHub: new worlds keep their saves with the world records again.
+	// Worlds already moved to another provider keep saving there (moving them back is not offered yet).
+	FRcloneConnections::SetDefaultSaveRemote(FString());
+	bStorageNoticeOk = true;
+	StorageNotice = TEXT("GitHub is now active: new worlds save here. Worlds you moved to another provider keep saving there.");
 	QueueStorageRefresh();
 }
 

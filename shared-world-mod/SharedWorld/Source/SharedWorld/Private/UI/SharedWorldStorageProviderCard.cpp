@@ -31,8 +31,11 @@ namespace
 		Row->AddChildToHorizontalBox(Difficulty)->SetVerticalAlignment(VAlign_Center);
 		if (P.bActive)
 		{
-			Row->AddChildToHorizontalBox(MakeSolidBadge(Tree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "ActiveBadge", "ACTIVE")))
-				->SetPadding(FMargin(6.f, 0.f, 0.f, 0.f));
+			if (UHorizontalBoxSlot* AS = Row->AddChildToHorizontalBox(MakeSolidBadge(Tree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "ActiveBadge", "ACTIVE"))))
+			{
+				AS->SetPadding(FMargin(6.f, 0.f, 0.f, 0.f));
+				AS->SetVerticalAlignment(VAlign_Center);
+			}
 		}
 		return Row;
 	}

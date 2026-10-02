@@ -681,6 +681,8 @@ namespace SharedWorldUi
 	inline UBorder* MakeSolidBadge(UWidgetTree* Tree, ESharedWorldTone Tone, const FText& Label, int32 FontSize = 11)
 	{
 		UBorder* P = MakePanel(Tree, ToneColor(Tone), Clear, FMargin(8.f, 2.f), 4.f, 0.f);
+		P->SetHorizontalAlignment(HAlign_Center);
+		P->SetVerticalAlignment(VAlign_Center);
 		UTextBlock* T = MakeText(Tree, FontSize, TextOnAccent, true);
 		T->SetAutoWrapText(false);
 		T->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis); // never spill out of its box

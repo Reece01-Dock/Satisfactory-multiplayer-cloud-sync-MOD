@@ -246,11 +246,15 @@ FSharedWorldStorageCatalog FSharedWorldStorageCatalog::Build(USharedWorldSubsyst
 	if (bGitConnected) C.ActiveProviderId = TEXT("github");
 	else if (Default.Kind == sw::ProviderKind::Folder) C.ActiveProviderId = TEXT("local-folder");
 	else C.ActiveProviderId = TEXT("github");
+	// A provider chosen with "Set as Active" is where saves go; GitHub (or the folder) keeps the world records.
+	for (const FSharedWorldStorageProvider& P : C.Providers)
+	{
+		if (P.bDefaultForSaves && P.bConnected) { C.ActiveProviderId = P.ProviderId; break; }
+	}
 	for (FSharedWorldStorageProvider& P : C.Providers)
 	{
 		// A provider can only be active if it is usable: an unlinked GitHub is the default choice but not "active".
-		// rclone connections are never active yet: worlds do not store their saves there until that wiring exists.
-		P.bActive = (P.ProviderId == C.ActiveProviderId) && P.bConnected && !P.IsRcloneBacked();
+		P.bActive = (P.ProviderId == C.ActiveProviderId) && P.bConnected;
 	}
 	return C;
 }

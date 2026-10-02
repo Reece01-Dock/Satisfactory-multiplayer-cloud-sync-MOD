@@ -36,6 +36,8 @@
 #include "SharedWorldCore/World/Membership.h"
 #include "SharedWorldCore/Storage/EncodingObjectStore.h"
 #include "SharedWorldCore/Storage/SaveStorageRouter.h"
+#include "SharedWorldCore/World/MoveSaves.h"
+#include "Rclone/RcloneProviders.h"
 #include "Rclone/RcloneObjectStore.h"
 #include "Rclone/RcloneRuntime.h"
 #include "SharedWorldCredentialStore.h"
@@ -3328,3 +3330,90 @@ void USharedWorldSubsystem::CreateWorldFromCurrentSession(const FString& Display
 	CreateWorldFromSave(Name.IsEmpty() ? SaveName : Name, SaveName, Provider, true, OnDone);
 }
 
+
+void USharedWorldSubsystem::MoveWorldSavesTo(const FString& WorldId, const FString& RemoteName, FDone OnDone)
+{
+	FSharedWorldRuntime* Runtime = FindRuntime(WorldId);
+	const sw::WorldEntry* Entry = Settings.Find(Std(WorldId));
+	if (!Runtime || !Entry || !Runtime->Leases || !Runtime->Objects)
+	{
+		OnDone(false, TEXT("That world isn't available right now."));
+		return;
+	}
+	if (Runtime->bCreating || (Host && Host->IsHostingWorld(WorldId)))
+	{
+		OnDone(false, TEXT("Leave the world first."));
+		return;
+	}
+	if (Runtime->Session)
+	{
+		const sw::SessionState St = Runtime->Session->View().State;
+		if (St != sw::SessionState::Idle && St != sw::SessionState::Error)
+		{
+			OnDone(false, TEXT("Leave the world first."));
+			return;
+		}
+	}
+	FRcloneConnection Conn;
+	bool bFound = false;
+	for (const FRcloneConnection& C : FRcloneConnections::Load())
+	{
+		if (C.RemoteName == RemoteName) { Conn = C; bFound = true; break; }
+	}
+	if (!bFound)
+	{
+		OnDone(false, TEXT("That storage is no longer connected."));
+		return;
+	}
+	const sw::ProviderEnvironment Env = MakeEnvironment();
+	std::string Fs = Std(Conn.Fs());
+	if (!Fs.empty() && Fs.back() != ':' && Fs.back() != '/') Fs += '/';
+	Fs += Entry->WorldId;
+	auto To = Env.OpenRemoteObjects ? Env.OpenRemoteObjects(Fs) : sw::Result<std::shared_ptr<sw::IObjectStore>>(sw::MakeError(sw::ErrorCode::Unsupported, "storage engine unavailable"));
+	if (!To)
+	{
+		OnDone(false, ToFString(To.Err().Message));
+		return;
+	}
+
+	sw::WorldInfo::SaveStorageInfo Target;
+	Target.Backend = Std(Conn.BackendType);
+	Target.Label = Std(Conn.Label);
+	std::shared_ptr<sw::LeaseManager> Leases = Runtime->Leases;
+	std::shared_ptr<sw::IObjectStore> From = Runtime->Objects;
+	std::shared_ptr<sw::IObjectStore> ToStore = *To;
+	const sw::Identity Me = MyIdentity();
+	const std::string TempDir = Std(FPaths::Combine(FPlatformProcess::UserSettingsDir(), TEXT("SatisfactorySharedWorld"), TEXT("worlds"), WorldId, TEXT("move")));
+	const FString Remote = Conn.Fs();
+	const FString Label = Conn.Label;
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=move_saves_started world=%s to=%s"), *WorldId, *Label);
+	RunInBackground([Leases, From, ToStore, Target, Me, TempDir, Label]() -> TPair<bool, FString>
+	{
+		auto Moved = sw::MoveWorldSaves(*Leases, *From, *ToStore, Target, Me, TempDir);
+		if (!Moved) return Fail(Moved.Err());
+		return {true, FString::Printf(TEXT("Moved to %s (%d file%s copied)."), *Label, Moved->Copied, Moved->Copied == 1 ? TEXT("") : TEXT("s"))};
+	},
+	[WorldId, Remote, Target, OnDone](USharedWorldSubsystem& Self, bool bOk, const FString& Message)
+	{
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=move_saves_done world=%s ok=%d"), *WorldId, bOk ? 1 : 0);
+		if (bOk)
+		{
+			if (sw::WorldEntry* E = Self.Settings.FindMutable(Std(WorldId)))
+			{
+				E->SaveRemote = Std(Remote);
+				E->SaveBackend = Target.Backend;
+				E->SaveLabel = Target.Label;
+				Self.SaveSettings();
+				if (FSharedWorldRuntime* R = Self.FindRuntime(WorldId))
+				{
+					R->Entry.SaveRemote = E->SaveRemote;
+					R->Entry.SaveBackend = E->SaveBackend;
+					R->Entry.SaveLabel = E->SaveLabel;
+					(void)Self.RebindRuntimeStorage(*R); // the router re-reads world.json and uses the new store
+				}
+			}
+			Self.OnChanged.Broadcast();
+		}
+		OnDone(bOk, Message);
+	});
+}

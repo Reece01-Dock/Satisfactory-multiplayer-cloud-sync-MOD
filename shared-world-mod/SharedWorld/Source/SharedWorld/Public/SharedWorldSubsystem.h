@@ -177,6 +177,11 @@ public:
 	 * Remote is an rclone path (remote:folder) that contains the world's folder. Returns an error message or empty.
 	 */
 	FString SetWorldSaveRemote(const FString& WorldId, const FString& Remote);
+	/**
+	 * Moves a world's existing save files to an rclone connection (remote name) and records it in world.json, so the
+	 * world keeps saving there. Holds the lease while copying; refused while the world is being played. Originals stay put.
+	 */
+	void MoveWorldSavesTo(const FString& WorldId, const FString& RemoteName, FDone OnDone);
 	/** Fired when hosting needs a save link this PC does not have (the browser opens that world's Storage tab). */
 	FOnSharedWorldSaveLinkRequested OnSaveLinkRequested;
 	/** Removes the world from this PC's list only. Refused while a session for it is active. */

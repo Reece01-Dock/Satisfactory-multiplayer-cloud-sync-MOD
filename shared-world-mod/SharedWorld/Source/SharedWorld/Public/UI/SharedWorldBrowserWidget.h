@@ -201,6 +201,9 @@ private:
 	UFUNCTION() void OnStorageRcloneDisconnect();
 	/** Makes the selected rclone connection the default home for new worlds' saves (or stops). */
 	UFUNCTION() void OnStorageUseForSaves();
+	/** Moves the listed worlds' saves one after another, reporting progress in the storage notice. */
+	void MoveWorldsSequentially(TArray<FString> WorldIds, FString RemoteName, int32 Index, int32 Failed);
+	FString LastMoveError;
 	/** Layout hook for later: a connected provider that is not the active one. Switching is not implemented yet. */
 	UFUNCTION() void OnStorageSetActive();
 
