@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "Services/SharedWorldDiscoveryService.h"
 #include "SharedWorldCore/App/LocalSettings.h"
+#include "SharedWorldSaveTarget.h"
 
 class USharedWorldSubsystem;
 
@@ -15,7 +16,7 @@ public:
 	explicit FSharedWorldCreationService(USharedWorldSubsystem& InSW) : SW(InSW) {}
 
 	TArray<FSharedWorldSaveInfo> ListLocalSaves() const;
-	void CreateFromExistingSave(const FString& DisplayName, const FString& SaveName, FDone OnDone);
+	void CreateFromExistingSave(const FString& DisplayName, const FString& SaveName, FDone OnDone, const FSharedWorldSaveTarget& SaveTarget = FSharedWorldSaveTarget());
 	void CreateFromCurrentWorld(const FString& DisplayName, FDone OnDone);
 	sw::ProviderConfig ResolveDefaultProvider(FString& OutNote) const;
 	bool NeedsStorageConnect() const;

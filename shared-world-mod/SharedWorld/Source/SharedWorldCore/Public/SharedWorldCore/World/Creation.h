@@ -20,6 +20,8 @@ namespace sw
 		WorldSettings Settings;
 		/** Creator is always the owner. false: anyone with storage access may PLAY (players.open). */
 		bool bRestrictToMembers = true;
+		/** Default = saves stay in the repository's own store. Recorded in world.json so friends know what to link. */
+		WorldInfo::SaveStorageInfo SaveStorage;
 	};
 
 	/**

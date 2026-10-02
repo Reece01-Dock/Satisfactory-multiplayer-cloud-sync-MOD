@@ -24,6 +24,8 @@ struct FSharedWorldPendingInviteView
 
 struct FSharedWorldDiscoverySnapshot
 {
+	/** Every configured world exactly once (the browser groups these itself; see SharedWorldBrowserModel). */
+	TArray<FSharedWorldEntryView> AllWorlds;
 	TArray<FSharedWorldEntryView> OwnedWorlds;
 	TArray<FSharedWorldEntryView> SharedWithYou;
 	TArray<FSharedWorldEntryView> FriendsPlaying;

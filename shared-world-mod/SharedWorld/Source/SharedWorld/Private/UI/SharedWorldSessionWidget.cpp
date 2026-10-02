@@ -43,9 +43,7 @@ TSharedRef<SWidget> USharedWorldSessionWidget::RebuildWidget()
 		Size->SetWidthOverride(820.f);
 		Size->SetHeightOverride(680.f);
 		WidgetTree->RootWidget = Size;
-		UBorder* Root = WidgetTree->ConstructWidget<UBorder>();
-		Root->SetBrushColor(BgDeep);
-		Root->SetPadding(FMargin(24.f));
+		UBorder* Root = MakePanel(WidgetTree, PanelFill, PanelEdge, FMargin(24.f), RadiusL, 1.f);
 		Size->AddChild(Root);
 		UVerticalBox* Col = WidgetTree->ConstructWidget<UVerticalBox>();
 		Root->SetContent(Col);
@@ -62,26 +60,38 @@ TSharedRef<SWidget> USharedWorldSessionWidget::RebuildWidget()
 		UHorizontalBox* Tabs = WidgetTree->ConstructWidget<UHorizontalBox>();
 		Col->AddChildToVerticalBox(Tabs)->SetPadding(FMargin(0, 0, 0, 10));
 		TObjectPtr<UTextBlock> T0, T1, T2, T3;
-		UButton* Overview = MakeButton(WidgetTree, Accent, T0, NSLOCTEXT("SharedWorld", "TabOverview", "Overview"), 12);
+		TabButtons.Reset();
+		UButton* Overview = MakeTabButton(WidgetTree, NSLOCTEXT("SharedWorld", "TabOverview", "Overview"), true);
 		Overview->OnClicked.AddDynamic(this, &USharedWorldSessionWidget::OnTabOverview);
-		Tabs->AddChildToHorizontalBox(Overview)->SetPadding(FMargin(0, 0, 6, 0));
-		UButton* Players = MakeButton(WidgetTree, SecondaryBtn, T1, NSLOCTEXT("SharedWorld", "TabPlayers", "Players"), 12);
+		Tabs->AddChildToHorizontalBox(Overview)->SetPadding(FMargin(0, 0, 8, 0));
+		UButton* Players = MakeTabButton(WidgetTree, NSLOCTEXT("SharedWorld", "TabPlayers", "Players"), false);
 		Players->OnClicked.AddDynamic(this, &USharedWorldSessionWidget::OnTabPlayers);
-		Tabs->AddChildToHorizontalBox(Players)->SetPadding(FMargin(0, 0, 6, 0));
-		UButton* History = MakeButton(WidgetTree, SecondaryBtn, T2, NSLOCTEXT("SharedWorld", "TabHistory", "History"), 12);
+		Tabs->AddChildToHorizontalBox(Players)->SetPadding(FMargin(0, 0, 8, 0));
+		UButton* History = MakeTabButton(WidgetTree, NSLOCTEXT("SharedWorld", "TabHistory", "History"), false);
 		History->OnClicked.AddDynamic(this, &USharedWorldSessionWidget::OnTabHistory);
-		Tabs->AddChildToHorizontalBox(History)->SetPadding(FMargin(0, 0, 6, 0));
-		UButton* Backups = MakeButton(WidgetTree, SecondaryBtn, T3, NSLOCTEXT("SharedWorld", "TabBackups", "Backups"), 12);
+		Tabs->AddChildToHorizontalBox(History)->SetPadding(FMargin(0, 0, 8, 0));
+		UButton* Backups = MakeTabButton(WidgetTree, NSLOCTEXT("SharedWorld", "TabBackups", "Backups"), false);
 		Backups->OnClicked.AddDynamic(this, &USharedWorldSessionWidget::OnTabBackups);
 		Tabs->AddChildToHorizontalBox(Backups);
+		TabButtons.Add(Overview);
+		TabButtons.Add(Players);
+		TabButtons.Add(History);
+		TabButtons.Add(Backups);
 
 		UScrollBox* Scroll = WidgetTree->ConstructWidget<UScrollBox>();
 		Col->AddChildToVerticalBox(Scroll)->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 		UVerticalBox* Body = WidgetTree->ConstructWidget<UVerticalBox>();
 		Scroll->AddChild(Body);
 
+		// Overview blocks sit on the same rounded cards as the rest of Shared Worlds.
+		auto AddCard = [&](UTextBlock* Text)
+		{
+			UBorder* Card = MakePanel(WidgetTree, RowFill, PanelEdge, FMargin(16.f, 12.f), RadiusM, 1.f);
+			Card->SetContent(Text);
+			Body->AddChildToVerticalBox(Card)->SetPadding(FMargin(0, 0, 0, 12));
+		};
 		OverviewText = MakeText(WidgetTree, 14, TextPrimary);
-		Body->AddChildToVerticalBox(OverviewText)->SetPadding(FMargin(0, 0, 0, 12));
+		AddCard(OverviewText);
 
 		TObjectPtr<UTextBlock> MakeLbl;
 		MakeSharedButton = MakePrimaryButton(WidgetTree, MakeLbl, NSLOCTEXT("SharedWorld", "MakeShared", "Make This a Shared World"), 15);
@@ -90,9 +100,9 @@ TSharedRef<SWidget> USharedWorldSessionWidget::RebuildWidget()
 		Body->AddChildToVerticalBox(MakeSharedButton)->SetPadding(FMargin(0, 0, 0, 12));
 
 		HostText = MakeText(WidgetTree, 14, TextPrimary);
-		Body->AddChildToVerticalBox(HostText)->SetPadding(FMargin(0, 0, 0, 12));
+		AddCard(HostText);
 		RankingText = MakeText(WidgetTree, 13, TextMuted);
-		Body->AddChildToVerticalBox(RankingText)->SetPadding(FMargin(0, 0, 0, 12));
+		AddCard(RankingText);
 		SectionText = MakeText(WidgetTree, 13, TextMuted);
 		Body->AddChildToVerticalBox(SectionText)->SetPadding(FMargin(0, 0, 0, 8));
 
@@ -161,24 +171,47 @@ TSharedRef<SWidget> USharedWorldSessionWidget::RebuildWidget()
 void USharedWorldSessionWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (USharedWorldSubsystem* S = SW())
+	{
+		ChangedHandle = S->OnChanged.AddUObject(this, &USharedWorldSessionWidget::HandleBackendChanged);
+	}
 	Refresh();
+}
+
+void USharedWorldSessionWidget::HandleBackendChanged()
+{
+	if (ActiveTab == 0) Refresh();
+	else if (ActiveTab == 1) RefreshSessionPlayersIfChanged();
 }
 
 void USharedWorldSessionWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
+	// Everything is event-driven (OnChanged) except the live host ranking, which the migration engine updates
+	// continuously without announcing it: re-read that, only while the Overview tab is showing, every 5 s.
+	if (ActiveTab != 0) return;
 	RefreshAccum += InDeltaTime;
-	if (RefreshAccum >= 1.5f)
+	if (RefreshAccum >= 5.f)
 	{
 		RefreshAccum = 0.f;
-		if (ActiveTab == 0) Refresh();
-		else if (ActiveTab == 1) RefreshSessionPlayersIfChanged();
+		Refresh();
 	}
 }
 
 void USharedWorldSessionWidget::NativeDestruct()
 {
+	if (USharedWorldSubsystem* S = SW()) S->OnChanged.Remove(ChangedHandle);
 	Super::NativeDestruct();
+}
+
+void USharedWorldSessionWidget::SetCardText(UTextBlock* Text, const FText& Value)
+{
+	if (!Text) return;
+	Text->SetText(Value);
+	if (UWidget* Card = Text->GetParent())
+	{
+		Card->SetVisibility(Value.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+	}
 }
 
 USharedWorldSubsystem* USharedWorldSessionWidget::SW() const
@@ -203,6 +236,14 @@ void USharedWorldSessionWidget::Close()
 	}
 }
 void USharedWorldSessionWidget::OnBack() { Close(); }
+
+void USharedWorldSessionWidget::UpdateTabs()
+{
+	for (int32 i = 0; i < TabButtons.Num(); ++i)
+	{
+		StyleTabButton(TabButtons[i], i == ActiveTab);
+	}
+}
 
 void USharedWorldSessionWidget::SetStatusMessage(const FText& Message)
 {
@@ -230,14 +271,14 @@ void USharedWorldSessionWidget::Refresh()
 
 	if (!bHasWorld)
 	{
-		OverviewText->SetText(NSLOCTEXT("SharedWorld", "NotSharedYet",
+		SetCardText(OverviewText, NSLOCTEXT("SharedWorld", "NotSharedYet",
 			"This save is not a Shared World yet.\n\nMake it shared so friends can Play / Join automatically."));
-		if (HostText) HostText->SetText(FText::GetEmpty());
-		if (RankingText) RankingText->SetText(FText::GetEmpty());
+		SetCardText(HostText, FText::GetEmpty());
+		SetCardText(RankingText, FText::GetEmpty());
 		return;
 	}
 
-	OverviewText->SetText(FText::FromString(S->DescribeActiveSession()));
+	SetCardText(OverviewText, FText::FromString(S->DescribeActiveSession()));
 	const FString Code = S->EnsureInviteCode(ActiveId);
 	FString HostBlock = FString::Printf(TEXT("Open the Players tab to add people from this game.\nShare code: %s\n"), *Code);
 	FString RankBlock = TEXT("PREFERRED SUCCESSORS\n");
@@ -265,32 +306,41 @@ void USharedWorldSessionWidget::Refresh()
 		: FString::Printf(TEXT("Preferred Successor: %s\n"), *Preferred);
 	for (const FString& R : RankLines) RankBlock += R + TEXT("\n");
 	if (RankLines.Num() == 0) RankBlock += TEXT("(ranking updates while connected)\n");
-	if (HostText) HostText->SetText(FText::FromString(HostBlock));
-	if (RankingText) RankingText->SetText(FText::FromString(RankBlock.Left(1200)));
+	SetCardText(HostText, FText::FromString(HostBlock));
+	SetCardText(RankingText, FText::FromString(RankBlock.Left(1200)));
 	if (AdvancedText) AdvancedText->SetText(FText::FromString(Adv.Left(4000)));
 }
 
 void USharedWorldSessionWidget::AddInviteRow(UVerticalBox* List, const FString& WorldId, const FString& PlayerId, const FString& DisplayName, const FString& SubLabel)
 {
 	if (!List || !WidgetTree) return;
-	UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
+	const FString Name = DisplayName.IsEmpty() ? PlayerId : DisplayName;
+	UBorder* Row = MakePanel(WidgetTree, RowFill, PanelEdge, FMargin(12.f, 8.f), RadiusM, 1.f);
 	List->AddChildToVerticalBox(Row)->SetPadding(FMargin(0, 0, 0, 6));
+	UHorizontalBox* H = WidgetTree->ConstructWidget<UHorizontalBox>();
+	Row->SetContent(H);
+	H->AddChildToHorizontalBox(MakePlayerAvatar(WidgetTree, Name, 40.f))->SetVerticalAlignment(VAlign_Center);
 	UVerticalBox* Labels = WidgetTree->ConstructWidget<UVerticalBox>();
-	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Labels))
+	if (UHorizontalBoxSlot* LabelSlot = H->AddChildToHorizontalBox(Labels))
 	{
 		LabelSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 		LabelSlot->SetVerticalAlignment(VAlign_Center);
+		LabelSlot->SetPadding(FMargin(12.f, 0.f, 8.f, 0.f));
 	}
-	UTextBlock* Name = MakeText(WidgetTree, 15, TextPrimary, true);
-	Name->SetText(FText::FromString(DisplayName.IsEmpty() ? PlayerId : DisplayName));
-	Labels->AddChildToVerticalBox(Name);
+	UTextBlock* NameText = MakeText(WidgetTree, 15, TextPrimary, true);
+	NameText->SetText(FText::FromString(Name));
+	NameText->SetAutoWrapText(false);
+	NameText->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+	Labels->AddChildToVerticalBox(NameText);
 	if (!SubLabel.IsEmpty())
 	{
 		UTextBlock* Sub = MakeText(WidgetTree, 12, TextMuted);
 		Sub->SetText(FText::FromString(SubLabel));
 		Labels->AddChildToVerticalBox(Sub);
 	}
-	UButton* AddBtn = TextLink(WidgetTree, NSLOCTEXT("SharedWorld", "AddPlayer", "Add"), 14);
+	// Orange: inviting someone is a Shared Worlds configuration action.
+	TObjectPtr<UTextBlock> AddLabel;
+	UButton* AddBtn = MakeRoleButton(WidgetTree, ESharedWorldButtonRole::Config, AddLabel, NSLOCTEXT("SharedWorld", "AddPlayer", "Add"), 14, FMargin(20.f, 7.f));
 	USharedWorldInviteRowBinder* Binder = NewObject<USharedWorldInviteRowBinder>(this);
 	Binder->Session = this;
 	Binder->WorldId = WorldId;
@@ -298,19 +348,22 @@ void USharedWorldSessionWidget::AddInviteRow(UVerticalBox* List, const FString& 
 	Binder->DisplayName = DisplayName;
 	InviteBinders.Add(Binder);
 	AddBtn->OnClicked.AddDynamic(Binder, &USharedWorldInviteRowBinder::OnInviteClicked);
-	if (UHorizontalBoxSlot* BtnSlot = Row->AddChildToHorizontalBox(AddBtn))
+	if (UHorizontalBoxSlot* BtnSlot = H->AddChildToHorizontalBox(AddBtn))
 	{
 		BtnSlot->SetVerticalAlignment(VAlign_Center);
-		BtnSlot->SetPadding(FMargin(12, 0, 0, 0));
 	}
 }
 
 void USharedWorldSessionWidget::SetOverviewVisible(bool bVisible)
 {
 	const ESlateVisibility Vis = bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
-	if (OverviewText) OverviewText->SetVisibility(Vis);
-	if (HostText) HostText->SetVisibility(Vis);
-	if (RankingText) RankingText->SetVisibility(Vis);
+	for (UTextBlock* T : { OverviewText.Get(), HostText.Get(), RankingText.Get() })
+	{
+		if (!T) continue;
+		T->SetVisibility(Vis);
+		// Cards hide with their text; Refresh() re-collapses any that are empty when the tab shows again.
+		if (UWidget* Card = T->GetParent()) Card->SetVisibility(bVisible ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	}
 	if (MakeSharedButton && bVisible)
 	{
 		// Refresh() decides MakeShared visibility from world state.
@@ -434,6 +487,7 @@ void USharedWorldSessionWidget::InvitePlayer(const FString& WorldId, const FStri
 void USharedWorldSessionWidget::OnTabOverview()
 {
 	ActiveTab = 0;
+	UpdateTabs();
 	bFriendsExpanded = false;
 	bMembersLoaded = false;
 	LastSessionPlayerKey.Reset();
@@ -456,6 +510,7 @@ void USharedWorldSessionWidget::OnTabOverview()
 void USharedWorldSessionWidget::OnTabPlayers()
 {
 	ActiveTab = 1;
+	UpdateTabs();
 	bMembersLoaded = false;
 	LastSessionPlayerKey.Reset();
 	SetOverviewVisible(false);
@@ -469,6 +524,7 @@ void USharedWorldSessionWidget::OnTabPlayers()
 void USharedWorldSessionWidget::OnTabHistory()
 {
 	ActiveTab = 2;
+	UpdateTabs();
 	bFriendsExpanded = false;
 	SetOverviewVisible(false);
 	if (InviteNameInput) InviteNameInput->SetVisibility(ESlateVisibility::Collapsed);
@@ -502,6 +558,7 @@ void USharedWorldSessionWidget::OnTabHistory()
 void USharedWorldSessionWidget::OnTabBackups()
 {
 	ActiveTab = 3;
+	UpdateTabs();
 	bFriendsExpanded = false;
 	SetOverviewVisible(false);
 	if (InviteNameInput) InviteNameInput->SetVisibility(ESlateVisibility::Collapsed);

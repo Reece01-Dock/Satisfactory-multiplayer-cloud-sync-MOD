@@ -1,6 +1,7 @@
 #include "SharedWorldCore/Model/Model.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 
 #include "SharedWorldCore/Util/Sha256.h"
@@ -530,6 +531,21 @@ namespace sw
 			Mods.push_back(std::move(MV));
 		}
 		V.Set("requiredMods", Value(std::move(Mods)));
+		if (!SaveStorage.IsDefault())
+		{
+			Value S;
+			S.Set("kind", "rclone");
+			S.Set("backend", SaveStorage.Backend);
+			S.Set("label", SaveStorage.Label);
+			V.Set("saveStorage", std::move(S));
+		}
+		if (!MovedTo.IsDefault())
+		{
+			Value M;
+			M.Set("backend", MovedTo.Backend);
+			M.Set("label", MovedTo.Label);
+			V.Set("movedTo", std::move(M));
+		}
 		return V;
 	}
 
@@ -559,6 +575,23 @@ namespace sw
 				SW_ASSIGN(M.Version, GetText(MV, "version", 64));
 				W.RequiredMods.push_back(std::move(M));
 			}
+		}
+		if (const Value* S = ObjectField(V, "saveStorage"))
+		{
+			std::string Kind;
+			SW_ASSIGN(Kind, GetText(*S, "kind", 16));
+			if (Kind != "rclone") return MakeError(ErrorCode::Unsupported, "this world stores its saves somewhere this mod version can't reach; update the mod");
+			SW_ASSIGN(W.SaveStorage.Backend, GetText(*S, "backend", 64));
+			SW_ASSIGN(W.SaveStorage.Label, GetText(*S, "label", 64));
+			for (char Ch : W.SaveStorage.Backend)
+			{
+				if (!(std::isalnum(static_cast<unsigned char>(Ch)) || Ch == ' ' || Ch == '-' || Ch == '_')) return MakeError(ErrorCode::Invalid, "saveStorage backend invalid");
+			}
+		}
+		if (const Value* Mv = ObjectField(V, "movedTo"))
+		{
+			SW_ASSIGN(W.MovedTo.Backend, GetText(*Mv, "backend", 64));
+			SW_ASSIGN(W.MovedTo.Label, GetText(*Mv, "label", 64));
 		}
 		SW_TRY(W.Validate());
 		return W;

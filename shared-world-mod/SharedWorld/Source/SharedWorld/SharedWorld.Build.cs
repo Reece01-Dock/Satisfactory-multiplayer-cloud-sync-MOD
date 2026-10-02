@@ -44,6 +44,18 @@ public class SharedWorld : ModuleRules
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "zlib");
 
+		// rclone engine (librclone.dll). Built from the rclone source by tools/rclone/build-librclone.ps1; loaded at run
+		// time with LoadLibrary, never linked. Staged with the plugin only when it has been built, so the mod still
+		// compiles and packages without it (the UI then reports "not installed").
+		string RcloneDir = Path.Combine(PluginDirectory, "Binaries", "ThirdParty", "rclone");
+		if (Target.Platform == UnrealTargetPlatform.Win64 && Directory.Exists(RcloneDir))
+		{
+			foreach (string RcloneFile in Directory.GetFiles(RcloneDir))
+			{
+				RuntimeDependencies.Add(RcloneFile);
+			}
+		}
+
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			// Windows Credential Manager (CredWriteW / CredReadW / CredDeleteW):

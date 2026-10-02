@@ -11,3 +11,6 @@
 .vs/
 .DS_Store
 Thumbs.db
+
+# rclone engine build workspace
+/tools/rclone/work/

@@ -18,6 +18,7 @@
 #include "Services/SharedWorldCreationService.h"
 #include "Services/SharedWorldDiscoveryService.h"
 #include "Services/SharedWorldInviteService.h"
+#include "SharedWorldSaveTarget.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "SharedWorldSubsystem.generated.h"
 
@@ -26,6 +27,8 @@ class USharedWorldJoinManager;
 class UNetDriver;
 
 DECLARE_MULTICAST_DELEGATE(FOnSharedWorldChanged);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnSharedWorldSaveLinkRequested, const FString& /*WorldId*/);
+
 
 /**
  * Last cloud state document seen for one world, for game-thread readers.
@@ -122,6 +125,8 @@ public:
 
 	/** Kick a lightweight cloud refresh without freezing the UI. */
 	void RequestDiscoveryRefresh();
+	/** True while a background cloud metadata refresh is running (the UI shows a loading hint, not a freeze). */
+	bool IsDiscoveryRefreshing() const { return bSummaryRefreshInFlight; }
 	TArray<struct FSharedWorldPendingInviteView> GetPendingInviteViews() const;
 	bool NeedsWelcomeStorageConnect() const;
 	void MarkWelcomeDone();
@@ -166,7 +171,24 @@ public:
 	/** Adds a world that already exists in Provider (verified before it is listed). */
 	void AddExistingWorld(const FString& WorldId, const FString& DisplayName, const sw::ProviderConfig& Provider, FDone OnDone);
 	/** Converts the local save SaveName (in the game's save directory) into a new Shared World. The original save is not modified. */
-	void CreateWorldFromSave(const FString& DisplayName, const FString& SaveName, const sw::ProviderConfig& Provider, bool bRestrictToMembers, FDone OnDone);
+	void CreateWorldFromSave(const FString& DisplayName, const FString& SaveName, const sw::ProviderConfig& Provider, bool bRestrictToMembers, FDone OnDone, const FSharedWorldSaveTarget& SaveTarget = FSharedWorldSaveTarget());
+	/**
+	 * Links (or with an empty Remote, unlinks) this PC to the save storage of a world whose world.json names one.
+	 * Remote is an rclone path (remote:folder) that contains the world's folder. Returns an error message or empty.
+	 */
+	FString SetWorldSaveRemote(const FString& WorldId, const FString& Remote);
+	/**
+	 * Moves a world's existing save files to an rclone connection (remote name) and records it in world.json, so the
+	 * world keeps saving there. Holds the lease while copying; refused while the world is being played. Originals stay put.
+	 */
+	void MoveWorldSavesTo(const FString& WorldId, const FString& RemoteName, FDone OnDone);
+	/**
+	 * Moves a whole world (record, state, locks, history and saves) to an rclone connection (remote name). The old copy
+	 * is frozen ("moved") so it can never continue in two places. Refused while the world is being played.
+	 */
+	void MoveWorldTo(const FString& WorldId, const FString& RemoteName, FDone OnDone);
+	/** Fired when hosting needs a save link this PC does not have (the browser opens that world's Storage tab). */
+	FOnSharedWorldSaveLinkRequested OnSaveLinkRequested;
 	/** Removes the world from this PC's list only. Refused while a session for it is active. */
 	FString ForgetWorld(const FString& WorldId);
 	std::vector<sw::WorldEntry> GetConfiguredWorlds() const { return Settings.Worlds; }
@@ -247,6 +269,8 @@ public:
 
 	/** Show a transparent top toast for a player-facing error / notice. */
 	void ShowPlayerError(const FText& Message);
+	/** A failed Shared World session: dialog with a plain-language title, the player-facing message, optional technical Details and Try Again. */
+	void ShowSessionErrorDialog(const FString& WorldId, const FString& Code, const FString& Message, const FString& Detail, bool bRetryable);
 	/** Queue a notice to show after travel (version bumps during Play). */
 	void QueuePlayerNotice(const FText& Message);
 	void FlushPendingPlayerNotice();
@@ -304,6 +328,7 @@ private:
 	mutable FCriticalSection SummaryMutex;
 	TMap<FString, FString> LastLocalStates; // edge-detection for HandleSessionTransition
 	TMap<FString, uint64> LastSequences;    // SessionView::Sequence last broadcast
+	TMap<FString, FString> LastPlayerKeys;  // connected-player set last announced (OnChanged on join/leave)
 	TSet<FString> JoinsInFlight; // worlds whose join attempt the game is running
 	bool bSummaryRefreshInFlight = false;
 
@@ -331,9 +356,10 @@ private:
 	FDelegateHandle NetworkFailureHandle;
 	FDelegateHandle ActorsInitializedHandle;
 	TWeakObjectPtr<UWorld> MenuWorld;
-	TWeakObjectPtr<class USharedWorldPanel> MenuPanel;
 	TWeakObjectPtr<class USharedWorldMigrationOverlay> MigrationOverlay;
 	TWeakObjectPtr<class UUserWidget> ActiveErrorPopup;
+	TWeakObjectPtr<class USharedWorldModal> ActiveSessionDialog;
+	FString LastSessionErrorKey;
 	FString LastOverlayMessage;
 	/** Survives map travel: version-bump notices are shown after the world loads. */
 	FString PendingPlayerNotice;

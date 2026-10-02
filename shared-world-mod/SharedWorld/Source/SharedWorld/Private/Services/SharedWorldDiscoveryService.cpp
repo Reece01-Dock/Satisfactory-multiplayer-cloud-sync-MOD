@@ -50,6 +50,8 @@ FSharedWorldDiscoverySnapshot FSharedWorldDiscoveryService::BuildSnapshot() cons
 {
 	FSharedWorldDiscoverySnapshot Snap;
 	const TArray<FSharedWorldEntryView> All = SW.GetWorldViews();
+	Snap.AllWorlds = All;
+	Snap.bRefreshing = SW.IsDiscoveryRefreshing();
 	for (const FSharedWorldEntryView& V : All)
 	{
 		if (V.bOwned) Snap.OwnedWorlds.Add(V);

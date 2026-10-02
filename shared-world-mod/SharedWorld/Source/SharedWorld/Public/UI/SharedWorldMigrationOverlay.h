@@ -3,6 +3,7 @@
 // host migration is a centered card (not a full-screen takeover).
 
 #include "Blueprint/UserWidget.h"
+#include "UI/SharedWorldUiStyle.h"
 #include "SharedWorldMigrationOverlay.generated.h"
 
 class UTextBlock;
@@ -38,11 +39,14 @@ private:
 	enum class ELayoutMode : uint8 { None, CornerSave, CenterMigration };
 	void SetProgressVisible(bool bVisible);
 	void ApplyLayout(ELayoutMode Mode);
+	/** Card edge, headline colour, bar colour and icon all come from one tone. */
+	void ApplyTone(ESharedWorldTone Tone);
 
 	UPROPERTY() TObjectPtr<UCanvasPanel> RootCanvas;
 	UPROPERTY() TObjectPtr<UBorder> DimBackdrop;
 	UPROPERTY() TObjectPtr<USizeBox> CardSize;
 	UPROPERTY() TObjectPtr<UBorder> CardBorder;
+	UPROPERTY() TObjectPtr<UBorder> ToneIconHolder;
 	UPROPERTY() TObjectPtr<UTextBlock> HeadlineText;
 	UPROPERTY() TObjectPtr<UTextBlock> DetailText;
 	UPROPERTY() TObjectPtr<UTextBlock> StepText;

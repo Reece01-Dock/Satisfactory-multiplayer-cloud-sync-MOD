@@ -4,6 +4,7 @@
 #include "SharedWorldCore/Providers/GitHub.h"
 #include "SharedWorldCore/Storage/EncodingObjectStore.h"
 #include "SharedWorldCore/Storage/FileStorage.h"
+#include "SharedWorldCore/Storage/SaveStorageRouter.h"
 #include "SharedWorldCore/Util/FileUtil.h"
 
 namespace sw
@@ -16,6 +17,7 @@ namespace sw
 		{
 		case ProviderKind::GitHub: return "github";
 		case ProviderKind::Folder: return "folder";
+		case ProviderKind::Rclone: return "rclone";
 		}
 		return "unknown";
 	}
@@ -55,6 +57,14 @@ namespace sw
 			}
 			return S;
 		}
+
+		/** Missing key = empty (settings written by older versions). */
+		Result<std::string> OptionalText(const Value& V, const char* Key, size_t Max)
+		{
+			const Value* F = V.Find(Key);
+			if (!F) return std::string();
+			return Text(V, Key, Max);
+		}
 	}
 
 	Status ProviderConfig::Validate() const
@@ -66,6 +76,14 @@ namespace sw
 			return {};
 		case ProviderKind::Folder:
 			return ValidateFolder(FolderPath);
+		case ProviderKind::Rclone:
+		{
+			if (Remote.empty()) return {}; // a known world that is not linked on this PC yet
+			if (Remote.size() > 1024 || Remote.find(':') == std::string::npos) return MakeError(ErrorCode::Invalid, "invalid storage location");
+			if (Remote.find("..") != std::string::npos) return MakeError(ErrorCode::Invalid, "storage location must not contain '..'");
+			for (unsigned char Ch : Remote) if (Ch < 0x20) return MakeError(ErrorCode::Invalid, "storage location contains control characters");
+			return {};
+		}
 		}
 		return MakeError(ErrorCode::Invalid, "unknown storage provider");
 	}
@@ -78,6 +96,12 @@ namespace sw
 		{
 			V.Set("owner", Owner);
 			V.Set("repo", Repo);
+		}
+		else if (Kind == ProviderKind::Rclone)
+		{
+			V.Set("remote", Remote);
+			V.Set("backend", Backend);
+			V.Set("label", Label);
 		}
 		else
 		{
@@ -101,6 +125,13 @@ namespace sw
 		{
 			C.Kind = ProviderKind::Folder;
 			SW_ASSIGN(C.FolderPath, Text(V, "path", 1024));
+		}
+		else if (Kind == "rclone")
+		{
+			C.Kind = ProviderKind::Rclone;
+			SW_ASSIGN(C.Remote, Text(V, "remote", 1024));
+			SW_ASSIGN(C.Backend, OptionalText(V, "backend", 64));
+			SW_ASSIGN(C.Label, OptionalText(V, "label", 64));
 		}
 		else
 		{
@@ -185,6 +216,9 @@ namespace sw
 			E.Set("lastPlayedAt", FormatTime(W.LastPlayedAt));
 			E.Set("relation", W.Relation == WorldRelation::Shared ? "shared" : "owned");
 			if (!W.InviteCode.empty()) E.Set("inviteCode", W.InviteCode);
+			if (!W.SaveRemote.empty()) E.Set("saveRemote", W.SaveRemote);
+			if (!W.SaveBackend.empty()) E.Set("saveBackend", W.SaveBackend);
+			if (!W.SaveLabel.empty()) E.Set("saveLabel", W.SaveLabel);
 			A.push_back(std::move(E));
 		}
 		V.Set("worlds", Value(std::move(A)));
@@ -242,6 +276,9 @@ namespace sw
 			{
 				W.InviteCode = Ic->AsString();
 			}
+			SW_ASSIGN(W.SaveRemote, OptionalText(E, "saveRemote", 1024));
+			SW_ASSIGN(W.SaveBackend, OptionalText(E, "saveBackend", 64));
+			SW_ASSIGN(W.SaveLabel, OptionalText(E, "saveLabel", 64));
 			if (S.Find(W.WorldId)) return MakeError(ErrorCode::Invalid, "duplicate world id in settings");
 			SW_TRY(S.Upsert(W));
 		}
@@ -288,6 +325,29 @@ namespace sw
 		return file::WriteAtomic(Path, json::Serialize(Settings.ToJson(), 2));
 	}
 
+	namespace
+	{
+		/** Routes the save files to where world.json says they live; the repository is untouched. */
+		void AttachSaveRouter(WorldStorage& Out, const WorldEntry& Entry, const ProviderEnvironment& Env)
+		{
+			SaveStorageRouterConfig R;
+			R.WorldId = Entry.WorldId;
+			R.Repository = Out.Repository;
+			R.Default = Out.Objects;
+			R.SaveRemote = Entry.SaveRemote;
+			R.KnownBackend = Entry.SaveBackend;
+			R.KnownLabel = Entry.SaveLabel;
+			R.OpenRemote = Env.OpenRemoteObjects;
+			if (Env.OnSaveStorageSeen)
+			{
+				auto Seen = Env.OnSaveStorageSeen;
+				const std::string WorldId = Entry.WorldId;
+				R.OnSeen = [Seen, WorldId](const std::string& Backend, const std::string& Label) { Seen(WorldId, Backend, Label); };
+			}
+			Out.Objects = std::make_shared<SaveStorageRouter>(std::move(R));
+		}
+	}
+
 	Result<WorldStorage> OpenWorldStorage(const WorldEntry& Entry, const ProviderEnvironment& Env)
 	{
 		SW_TRY(ValidateWorldId(Entry.WorldId));
@@ -332,6 +392,30 @@ namespace sw
 			Enc.Compress.Level = 3;
 			Enc.Compress.MinRatioGain = 0.05;
 			Out.Objects = std::make_shared<EncodingObjectStore>(std::move(RawObjects), Enc);
+			AttachSaveRouter(Out, Entry, Env);
+			return Out;
+		}
+		case ProviderKind::Rclone:
+		{
+			// The whole world on an rclone provider: an append-only log for the record/state/locks (safe without any
+			// conditional write) and content-addressed save objects next to it.
+			if (!Env.OpenRemoteLogStore || !Env.OpenRemoteObjects) return MakeError(ErrorCode::Unsupported, "the storage engine isn't available");
+			if (Entry.Provider.Remote.empty())
+			{
+				const std::string Shown = Entry.Provider.Label.empty() ? Entry.Provider.Backend : Entry.Provider.Label;
+				return MakeError(ErrorCode::Unsupported,
+					"This world is stored on " + Shown + ". Link " + Shown + " in the world's Storage tab " + SaveStorageNotLinkedPhrase + ".");
+			}
+			std::string Fs = Entry.Provider.Remote;
+			if (Fs.back() != ':' && Fs.back() != '/') Fs += '/';
+			Fs += Entry.WorldId;
+			std::shared_ptr<ILogStore> Log;
+			SW_ASSIGN(Log, Env.OpenRemoteLogStore(Fs + "/record"));
+			LogRepositoryConfig LogCfg;
+			LogCfg.SettleMs = Env.RemoteSettleMs;
+			Out.Repository = std::make_shared<LogRepository>(std::move(Log), LogCfg);
+			SW_ASSIGN(Out.Objects, Env.OpenRemoteObjects(Fs));
+			AttachSaveRouter(Out, Entry, Env);
 			return Out;
 		}
 		case ProviderKind::Folder:
@@ -344,6 +428,7 @@ namespace sw
 			Enc.Compress.Level = 3;
 			Enc.Compress.MinRatioGain = 0.05;
 			Out.Objects = std::make_shared<EncodingObjectStore>(std::move(RawObjects), Enc);
+			AttachSaveRouter(Out, Entry, Env);
 			return Out;
 		}
 		}

@@ -5,6 +5,7 @@
 
 #include "SharedWorldCore/Model/Model.h"
 #include "SharedWorldCore/Storage/FileStorage.h"
+#include "SharedWorldCore/Storage/LogRepository.h"
 #include "SharedWorldCore/Storage/MemoryStorage.h"
 #include "SharedWorldCore/Util/FileUtil.h"
 #include "SharedWorldCore/Util/Sha256.h"
@@ -42,6 +43,24 @@ namespace
 		const std::string Dir = swtest::TempDir();
 		// Separate FileRepository instances on one directory behave like separate processes.
 		Fn("filesystem", [Dir]() { return std::unique_ptr<IWorldRepository>(std::make_unique<FileRepository>(Dir)); });
+		// Append-only log on plain file storage (rclone providers). One LogRepository per "process", one shared store.
+		Fn("log-exclusive", [Store = std::make_shared<MemoryLogStore>(true)]()
+		{
+			return std::unique_ptr<IWorldRepository>(std::make_unique<LogRepository>(Store));
+		});
+		Fn("log-duplicates", [Store = std::make_shared<MemoryLogStore>(false, 5)]()
+		{
+			LogRepositoryConfig C;
+			C.SettleMs = 30; // > the 5 ms listing delay
+			return std::unique_ptr<IWorldRepository>(std::make_unique<LogRepository>(Store, C));
+		});
+		// Like rclone: no server timestamps, only names decide; settle must exceed twice the listing delay.
+		Fn("log-rclone", [Store = std::make_shared<MemoryLogStore>(false, 5, false)]()
+		{
+			LogRepositoryConfig C;
+			C.SettleMs = 30;
+			return std::unique_ptr<IWorldRepository>(std::make_unique<LogRepository>(Store, C));
+		});
 	}
 }
 
