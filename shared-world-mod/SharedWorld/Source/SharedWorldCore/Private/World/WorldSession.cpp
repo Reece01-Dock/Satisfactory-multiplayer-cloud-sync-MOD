@@ -403,6 +403,7 @@ namespace sw
 			// This copy was frozen when the world moved: hosting it would fork the world.
 			ErrorInfo E;
 			E.Code = "WORLD_MOVED";
+			E.Detail = Info->MovedTo.Backend + "|" + Info->MovedTo.Label; // the game uses this to offer linking
 			E.Message = "This world moved to " + (Info->MovedTo.Label.empty() ? Info->MovedTo.Backend : Info->MovedTo.Label)
 				+ ". Link " + (Info->MovedTo.Label.empty() ? Info->MovedTo.Backend : Info->MovedTo.Label)
 				+ " in the world's Storage tab to keep playing.";

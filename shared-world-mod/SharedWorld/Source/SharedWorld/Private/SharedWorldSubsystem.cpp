@@ -415,6 +415,16 @@ sw::ProviderEnvironment USharedWorldSubsystem::MakeEnvironment() const
 		Enc.Compress.MinRatioGain = 0.05;
 		return std::shared_ptr<sw::IObjectStore>(std::make_shared<sw::EncodingObjectStore>(std::move(Raw), Enc));
 	};
+	// Whole worlds on an rclone provider: the record/state/locks log (sw::LogRepository) lives in <world>/record.
+	Env.OpenRemoteLogStore = [](const std::string& Fs) -> sw::Result<std::shared_ptr<sw::ILogStore>>
+	{
+		FRcloneRuntime& Rc = FRcloneRuntime::Get();
+		if (!Rc.IsInstalled() || !Rc.EnsureLoaded())
+		{
+			return sw::MakeError(sw::ErrorCode::Unsupported, "The storage engine isn't available, so this world can't be reached.");
+		}
+		return std::shared_ptr<sw::ILogStore>(std::make_shared<FRcloneLogStore>(UTF8_TO_TCHAR(Fs.c_str())));
+	};
 	TWeakObjectPtr<const USharedWorldSubsystem> WeakThis(this);
 	Env.OnSaveStorageSeen = [WeakThis](const std::string& WorldId, const std::string& Backend, const std::string& Label)
 	{
@@ -450,6 +460,29 @@ FString USharedWorldSubsystem::SetWorldSaveRemote(const FString& WorldId, const 
 	if (Clean.Len() > 1024 || (!Clean.IsEmpty() && !Clean.Contains(TEXT(":"))))
 	{
 		return TEXT("Pick a connected storage provider.");
+	}
+	if (E->Provider.Kind == sw::ProviderKind::Rclone)
+	{
+		// The whole world lives on that provider: linking tells this PC where the shared folder is.
+		E->Provider.Remote = Std(Clean);
+		SaveSettings();
+		if (FSharedWorldRuntime* R = FindRuntime(WorldId))
+		{
+			R->Entry.Provider = E->Provider;
+			if (!RebindRuntimeStorage(*R))
+			{
+				OnChanged.Broadcast();
+				return TEXT("Saved. It takes effect after you leave this world.");
+			}
+		}
+		else if (!Clean.IsEmpty())
+		{
+			(void)FindOrCreateRuntime(*E); // first link on this PC: open the world now
+		}
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=world_link_set world=%s linked=%d"), *WorldId, Clean.IsEmpty() ? 0 : 1);
+		RequestDiscoveryRefresh();
+		OnChanged.Broadcast();
+		return FString();
 	}
 	E->SaveRemote = Std(Clean);
 	SaveSettings();
@@ -518,6 +551,10 @@ namespace
 		if (A.Kind == sw::ProviderKind::GitHub)
 		{
 			return A.Owner == B.Owner && A.Repo == B.Repo;
+		}
+		if (A.Kind == sw::ProviderKind::Rclone)
+		{
+			return A.Remote == B.Remote;
 		}
 		return A.FolderPath == B.FolderPath;
 	}
@@ -2427,10 +2464,41 @@ void USharedWorldSubsystem::ShowSessionErrorDialog(const FString& WorldId, const
 	// Hosting needs this world's save files, which live on a provider this PC hasn't linked yet. Joining a friend's
 	// session still works, so this is an offer to link rather than a dead end.
 	const FString NotLinked = UTF8_TO_TCHAR(sw::SaveStorageNotLinkedPhrase);
-	if (Message.Contains(NotLinked) || Detail.Contains(NotLinked))
+	const bool bMoved = Code == TEXT("WORLD_MOVED");
+	if (bMoved)
+	{
+		// The owner moved this world (e.g. GitHub -> Dropbox) and froze this copy. Point the entry at the new home
+		// (not linked on this PC yet) so linking opens the real world. The old copy is never played again.
+		FString Backend, MovedLabel;
+		Detail.Split(TEXT("|"), &Backend, &MovedLabel);
+		if (sw::WorldEntry* E = Settings.FindMutable(Std(WorldId)); E && !Backend.IsEmpty())
+		{
+			E->Provider = sw::ProviderConfig{};
+			E->Provider.Kind = sw::ProviderKind::Rclone;
+			E->Provider.Backend = Std(Backend.Left(64));
+			E->Provider.Label = Std(MovedLabel.Left(64));
+			E->SaveRemote.clear();
+			E->SaveBackend.clear();
+			E->SaveLabel.clear();
+			SaveSettings();
+			// Drop the old runtime on the next frame (this call can come from inside its session update).
+			TWeakObjectPtr<USharedWorldSubsystem> WeakSelf(this);
+			FRcloneRuntime::PostToGameThread([WeakSelf, WorldId]()
+			{
+				if (USharedWorldSubsystem* Self = WeakSelf.Get())
+				{
+					Self->Runtimes.Remove(WorldId);
+					Self->OnChanged.Broadcast();
+				}
+			});
+		}
+	}
+	if (bMoved || Message.Contains(NotLinked) || Detail.Contains(NotLinked))
 	{
 		const sw::WorldEntry* E = Settings.Find(Std(WorldId));
-		const FString Label = (E && !E->SaveLabel.empty()) ? ToFString(E->SaveLabel) : FString(TEXT("its storage"));
+		FString Label = TEXT("its storage");
+		if (E && !E->SaveLabel.empty()) Label = ToFString(E->SaveLabel);
+		else if (E && E->Provider.Kind == sw::ProviderKind::Rclone) Label = ToFString(E->Provider.Label.empty() ? E->Provider.Backend : E->Provider.Label);
 		FSharedWorldModalSpec Link;
 		Link.Tone = ESharedWorldTone::Warning;
 		Link.Title = FText::Format(NSLOCTEXT("SharedWorld", "LinkToHostTitle", "Link {0} to host this world"), FText::FromString(Label));
@@ -3082,6 +3150,21 @@ void USharedWorldSubsystem::PreferGitHubCloudStorageIfConnected()
 
 sw::ProviderConfig USharedWorldSubsystem::ResolveDefaultStorage(FString& OutNote) const
 {
+	// A provider set as Active in Settings > Storage holds new worlds completely (record, locks and saves).
+	if (const FString Active = FRcloneConnections::GetDefaultSaveRemote(); !Active.IsEmpty())
+	{
+		for (const FRcloneConnection& Conn : FRcloneConnections::Load())
+		{
+			if (Conn.RemoteName != Active) continue;
+			sw::ProviderConfig C;
+			C.Kind = sw::ProviderKind::Rclone;
+			C.Remote = Std(Conn.Fs());
+			C.Backend = Std(Conn.BackendType);
+			C.Label = Std(Conn.Label);
+			OutNote = FString::Printf(TEXT("Stored on %s."), *Conn.Label);
+			return C;
+		}
+	}
 	// Prefer live GitHub when connected, even if an older welcome chose folder storage.
 	const FString Login = GetGitHubLogin();
 	if (!Login.IsEmpty())
@@ -3171,13 +3254,13 @@ bool USharedWorldSubsystem::PushWorldInviteToConnectedPlayer(const FString& Targ
 	{
 		return false;
 	}
-	const FString Kind = Entry->Provider.Kind == sw::ProviderKind::GitHub ? TEXT("github") : TEXT("folder");
-	const FString OwnerOrPath = Entry->Provider.Kind == sw::ProviderKind::GitHub
-		? ToFString(Entry->Provider.Owner)
-		: ToFString(Entry->Provider.FolderPath);
-	const FString Repo = Entry->Provider.Kind == sw::ProviderKind::GitHub
-		? ToFString(Entry->Provider.Repo)
-		: FString();
+	const bool bRclone = Entry->Provider.Kind == sw::ProviderKind::Rclone;
+	const FString Kind = bRclone ? TEXT("rclone") : (Entry->Provider.Kind == sw::ProviderKind::GitHub ? TEXT("github") : TEXT("folder"));
+	// rclone worlds: send which provider it is (never this PC's rclone path); the friend links their own connection.
+	const FString OwnerOrPath = bRclone ? ToFString(Entry->Provider.Backend)
+		: (Entry->Provider.Kind == sw::ProviderKind::GitHub ? ToFString(Entry->Provider.Owner) : ToFString(Entry->Provider.FolderPath));
+	const FString Repo = bRclone ? ToFString(Entry->Provider.Label)
+		: (Entry->Provider.Kind == sw::ProviderKind::GitHub ? ToFString(Entry->Provider.Repo) : FString());
 	const FString FromName = ToFString(MyIdentity().DisplayName);
 	Bridge->PushInviteToPlayer(
 		TargetPlayerId,
@@ -3203,7 +3286,13 @@ void USharedWorldSubsystem::ReceivePushedWorldInvite(
 	Entry.DisplayName = Std(WorldName.IsEmpty() ? WorldId : WorldName);
 	Entry.AddedAt = NowMs();
 	Entry.Relation = sw::WorldRelation::Shared;
-	if (ProviderKind.Equals(TEXT("folder"), ESearchCase::IgnoreCase))
+	if (ProviderKind.Equals(TEXT("rclone"), ESearchCase::IgnoreCase))
+	{
+		Entry.Provider.Kind = sw::ProviderKind::Rclone; // unlinked until this player picks their own connection
+		Entry.Provider.Backend = Std(OwnerOrPath.Left(64));
+		Entry.Provider.Label = Std(Repo.Left(64));
+	}
+	else if (ProviderKind.Equals(TEXT("folder"), ESearchCase::IgnoreCase))
 	{
 		Entry.Provider.Kind = sw::ProviderKind::Folder;
 		Entry.Provider.FolderPath = Std(OwnerOrPath);
@@ -3411,6 +3500,97 @@ void USharedWorldSubsystem::MoveWorldSavesTo(const FString& WorldId, const FStri
 					R->Entry.SaveLabel = E->SaveLabel;
 					(void)Self.RebindRuntimeStorage(*R); // the router re-reads world.json and uses the new store
 				}
+			}
+			Self.OnChanged.Broadcast();
+		}
+		OnDone(bOk, Message);
+	});
+}
+
+void USharedWorldSubsystem::MoveWorldTo(const FString& WorldId, const FString& RemoteName, FDone OnDone)
+{
+	FSharedWorldRuntime* Runtime = FindRuntime(WorldId);
+	const sw::WorldEntry* Entry = Settings.Find(Std(WorldId));
+	if (!Runtime || !Entry || !Runtime->Leases || !Runtime->Objects)
+	{
+		OnDone(false, TEXT("That world isn't available right now."));
+		return;
+	}
+	if (Runtime->bCreating || (Host && Host->IsHostingWorld(WorldId)))
+	{
+		OnDone(false, TEXT("Leave the world first."));
+		return;
+	}
+	if (Runtime->Session)
+	{
+		const sw::SessionState St = Runtime->Session->View().State;
+		if (St != sw::SessionState::Idle && St != sw::SessionState::Error)
+		{
+			OnDone(false, TEXT("Leave the world first."));
+			return;
+		}
+	}
+	FRcloneConnection Conn;
+	bool bFound = false;
+	for (const FRcloneConnection& C : FRcloneConnections::Load())
+	{
+		if (C.RemoteName == RemoteName) { Conn = C; bFound = true; break; }
+	}
+	if (!bFound)
+	{
+		OnDone(false, TEXT("That storage is no longer connected."));
+		return;
+	}
+	if (Entry->Provider.Kind == sw::ProviderKind::Rclone && Entry->Provider.Remote == Std(Conn.Fs()))
+	{
+		OnDone(true, FString::Printf(TEXT("Already on %s."), *Conn.Label));
+		return;
+	}
+
+	sw::WorldEntry NewEntry = *Entry;
+	NewEntry.Provider = sw::ProviderConfig{};
+	NewEntry.Provider.Kind = sw::ProviderKind::Rclone;
+	NewEntry.Provider.Remote = Std(Conn.Fs());
+	NewEntry.Provider.Backend = Std(Conn.BackendType);
+	NewEntry.Provider.Label = Std(Conn.Label);
+	NewEntry.SaveRemote.clear(); // saves now live with the world
+	NewEntry.SaveBackend.clear();
+	NewEntry.SaveLabel.clear();
+	auto NewStorage = sw::OpenWorldStorage(NewEntry, MakeEnvironment());
+	if (!NewStorage)
+	{
+		OnDone(false, ToFString(NewStorage.Err().Message));
+		return;
+	}
+
+	sw::WorldInfo::SaveStorageInfo Target;
+	Target.Backend = Std(Conn.BackendType);
+	Target.Label = Std(Conn.Label);
+	std::shared_ptr<sw::LeaseManager> Leases = Runtime->Leases;
+	std::shared_ptr<sw::IObjectStore> FromObjects = Runtime->Objects;
+	std::shared_ptr<sw::IWorldRepository> ToRepo = NewStorage->Repository;
+	std::shared_ptr<sw::IObjectStore> ToObjects = NewStorage->Objects;
+	const sw::Identity Me = MyIdentity();
+	const std::string TempDir = Std(FPaths::Combine(FPlatformProcess::UserSettingsDir(), TEXT("SatisfactorySharedWorld"), TEXT("worlds"), WorldId, TEXT("move")));
+	const FString Label = Conn.Label;
+	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=move_world_started world=%s to=%s"), *WorldId, *Label);
+	RunInBackground([Leases, FromObjects, ToRepo, ToObjects, Target, Me, TempDir, Label]() -> TPair<bool, FString>
+	{
+		auto Moved = sw::MoveWholeWorld(*Leases, *FromObjects, *ToRepo, *ToObjects, Target, Me, TempDir);
+		if (!Moved) return Fail(Moved.Err());
+		return {true, FString::Printf(TEXT("Moved to %s."), *Label)};
+	},
+	[WorldId, NewEntry, OnDone](USharedWorldSubsystem& Self, bool bOk, const FString& Message)
+	{
+		UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=move_world_done world=%s ok=%d"), *WorldId, bOk ? 1 : 0);
+		if (bOk)
+		{
+			(void)Self.Settings.Upsert(NewEntry);
+			Self.SaveSettings();
+			if (FSharedWorldRuntime* R = Self.FindRuntime(WorldId))
+			{
+				R->Entry = NewEntry;
+				(void)Self.RebindRuntimeStorage(*R); // from now on the world lives on the new storage
 			}
 			Self.OnChanged.Broadcast();
 		}

@@ -182,6 +182,11 @@ public:
 	 * world keeps saving there. Holds the lease while copying; refused while the world is being played. Originals stay put.
 	 */
 	void MoveWorldSavesTo(const FString& WorldId, const FString& RemoteName, FDone OnDone);
+	/**
+	 * Moves a whole world (record, state, locks, history and saves) to an rclone connection (remote name). The old copy
+	 * is frozen ("moved") so it can never continue in two places. Refused while the world is being played.
+	 */
+	void MoveWorldTo(const FString& WorldId, const FString& RemoteName, FDone OnDone);
 	/** Fired when hosting needs a save link this PC does not have (the browser opens that world's Storage tab). */
 	FOnSharedWorldSaveLinkRequested OnSaveLinkRequested;
 	/** Removes the world from this PC's list only. Refused while a session for it is active. */

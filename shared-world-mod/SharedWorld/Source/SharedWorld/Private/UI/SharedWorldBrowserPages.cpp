@@ -26,6 +26,7 @@
 #include "Components/UniformGridPanel.h"
 #include "Components/UniformGridSlot.h"
 #include "Rclone/RcloneProviders.h"
+#include "SharedWorldUeConvert.h"
 
 using namespace SharedWorldUi;
 
@@ -314,6 +315,14 @@ void USharedWorldBrowserWidget::RebuildCreateReviewPage()
 	{
 		FString Note;
 		const sw::ProviderConfig P = S->Creation().ResolveDefaultProvider(Note);
+		if (P.Kind == sw::ProviderKind::Rclone)
+		{
+			// The active provider holds the whole world; there is nothing separate to choose.
+			AddValueRow(NSLOCTEXT("SharedWorld", "RevStorageAll", "Storage"), SharedWorldUe::ToFString(P.Label.empty() ? P.Backend : P.Label),
+				NSLOCTEXT("SharedWorld", "RevStorageAllDesc", "The world, who is hosting, its history and saves. Change the active storage in Settings > Storage."));
+		}
+		else
+		{
 		const FString DefaultName = P.Kind == sw::ProviderKind::GitHub ? FString(TEXT("GitHub")) : FString(TEXT("Local folder"));
 		AddValueRow(NSLOCTEXT("SharedWorld", "RevStorage", "World record"), DefaultName,
 			NSLOCTEXT("SharedWorld", "RevStorageDesc", "Who can play, who is hosting, and the save history."));
@@ -357,6 +366,7 @@ void USharedWorldBrowserWidget::RebuildCreateReviewPage()
 		for (const FRcloneConnection& C : Usable)
 		{
 			Choice(C.RemoteName, C.Label, FString::Printf(TEXT("Upload saves to %s, folder \"%s\"."), *C.Label, *C.Folder));
+		}
 		}
 	}
 	if (!CreateError.IsEmpty())

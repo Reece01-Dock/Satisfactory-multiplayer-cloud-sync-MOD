@@ -293,29 +293,49 @@ void USharedWorldBrowserWidget::AddDetailsStorage(UVerticalBox* Col, const FShar
 		return;
 	}
 	const bool bGit = Entry->Provider.Kind == sw::ProviderKind::GitHub;
-	AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StProvider", "Provider"), bGit ? NSLOCTEXT("SharedWorld", "StGit", "GitHub") : NSLOCTEXT("SharedWorld", "StFolder", "Shared folder"), TextPrimary);
-	AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StWhere", "Location"),
-		FText::FromString(bGit ? FString::Printf(TEXT("%s/%s"), UTF8_TO_TCHAR(Entry->Provider.Owner.c_str()), UTF8_TO_TCHAR(Entry->Provider.Repo.c_str()))
-			: FString(UTF8_TO_TCHAR(Entry->Provider.FolderPath.c_str()))), TextPrimary);
-	const bool bRcloneSaves = !Entry->SaveBackend.empty();
-	const FString SaveLabel = !Entry->SaveLabel.empty() ? SharedWorldUe::ToFString(Entry->SaveLabel) : SharedWorldUe::ToFString(Entry->SaveBackend);
-	const bool bLinked = !Entry->SaveRemote.empty();
-	AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StSaves", "Save files"),
-		bRcloneSaves ? FText::FromString(SaveLabel) : NSLOCTEXT("SharedWorld", "StSavesDefault", "With the world record"), TextPrimary);
-	if (bRcloneSaves)
+	// A world stored entirely on a provider (record, locks and saves), e.g. Dropbox.
+	const bool bRcloneWorld = Entry->Provider.Kind == sw::ProviderKind::Rclone;
+	// A GitHub/folder world whose save files alone live on a provider.
+	const bool bRcloneSaves = !bRcloneWorld && !Entry->SaveBackend.empty();
+	const FString SaveLabel = bRcloneWorld
+		? SharedWorldUe::ToFString(Entry->Provider.Label.empty() ? Entry->Provider.Backend : Entry->Provider.Label)
+		: (!Entry->SaveLabel.empty() ? SharedWorldUe::ToFString(Entry->SaveLabel) : SharedWorldUe::ToFString(Entry->SaveBackend));
+	const bool bLinked = bRcloneWorld ? !Entry->Provider.Remote.empty() : !Entry->SaveRemote.empty();
+	const FString LinkBackend = SharedWorldUe::ToFString(bRcloneWorld ? Entry->Provider.Backend : Entry->SaveBackend);
+	const FString LinkedRemote = SharedWorldUe::ToFString(bRcloneWorld ? Entry->Provider.Remote : Entry->SaveRemote);
+
+	AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StProvider", "Provider"),
+		bRcloneWorld ? FText::FromString(SaveLabel) : (bGit ? NSLOCTEXT("SharedWorld", "StGit", "GitHub") : NSLOCTEXT("SharedWorld", "StFolder", "Shared folder")), TextPrimary);
+	if (bRcloneWorld)
 	{
-		AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StSavesHere", "On this PC"),
-			bLinked ? FText::FromString(SharedWorldUe::ToFString(Entry->SaveRemote) + TEXT("/") + Item.Id())
-				: NSLOCTEXT("SharedWorld", "StSavesNotLinked", "Not linked"), bLinked ? Ok : Warn);
+		AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StWhere", "Location"),
+			bLinked ? FText::FromString(LinkedRemote + TEXT("/") + Item.Id()) : NSLOCTEXT("SharedWorld", "StNotLinkedHere", "Not linked on this PC"), bLinked ? TextPrimary : Warn);
+	}
+	else
+	{
+		AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StWhere", "Location"),
+			FText::FromString(bGit ? FString::Printf(TEXT("%s/%s"), UTF8_TO_TCHAR(Entry->Provider.Owner.c_str()), UTF8_TO_TCHAR(Entry->Provider.Repo.c_str()))
+				: FString(UTF8_TO_TCHAR(Entry->Provider.FolderPath.c_str()))), TextPrimary);
+		AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StSaves", "Save files"),
+			bRcloneSaves ? FText::FromString(SaveLabel) : NSLOCTEXT("SharedWorld", "StSavesDefault", "With the world record"), TextPrimary);
+		if (bRcloneSaves)
+		{
+			AddDetailStatRow(P, NSLOCTEXT("SharedWorld", "StSavesHere", "On this PC"),
+				bLinked ? FText::FromString(LinkedRemote + TEXT("/") + Item.Id()) : NSLOCTEXT("SharedWorld", "StSavesNotLinked", "Not linked"), bLinked ? Ok : Warn);
+		}
 	}
 	UTextBlock* Note = MakeText(WidgetTree, FontSmall + 1, TextMuted);
-	Note->SetText(bRcloneSaves
-		? FText::Format(NSLOCTEXT("SharedWorld", "StNoteRclone",
-			"Who can play and who is hosting are kept above; the saves themselves are on {0}. Anyone can join while someone else hosts. To host, link {0} on this PC."),
+	Note->SetText(bRcloneWorld
+		? FText::Format(NSLOCTEXT("SharedWorld", "StNoteWorld",
+			"Everything for this world (who can play, who is hosting, history and saves) is kept on {0}. Each player links their own {0} once; the owner shares the folder with them in {0}."),
 			FText::FromString(SaveLabel))
-		: NSLOCTEXT("SharedWorld", "StNote", "The latest save of this world is kept here so any player can pick it up. Manage the account under Shared Worlds Settings."));
+		: (bRcloneSaves
+			? FText::Format(NSLOCTEXT("SharedWorld", "StNoteRclone",
+				"Who can play and who is hosting are kept above; the saves themselves are on {0}. Anyone can join while someone else hosts. To host, link {0} on this PC."),
+				FText::FromString(SaveLabel))
+			: NSLOCTEXT("SharedWorld", "StNote", "The latest save of this world is kept here so any player can pick it up. Manage the account under Shared Worlds Settings.")));
 	Col->AddChildToVerticalBox(Note)->SetPadding(FMargin(2.f, 4.f, 0.f, 0.f));
-	if (!bRcloneSaves) return;
+	if (!bRcloneSaves && !bRcloneWorld) return;
 
 	// ---- link / relink this PC to the world's save storage
 	UTextBlock* LinkHead = MakeText(WidgetTree, FontBody, TextPrimary, true);
@@ -330,7 +350,7 @@ void USharedWorldBrowserWidget::AddDetailsStorage(UVerticalBox* Col, const FShar
 	TArray<FRcloneConnection> Matching;
 	for (const FRcloneConnection& C : FRcloneConnections::Load())
 	{
-		if (C.BackendType == SharedWorldUe::ToFString(Entry->SaveBackend)) Matching.Add(C);
+		if (C.BackendType == LinkBackend) Matching.Add(C);
 	}
 	if (Matching.Num() == 0)
 	{
@@ -344,7 +364,7 @@ void USharedWorldBrowserWidget::AddDetailsStorage(UVerticalBox* Col, const FShar
 	else
 	{
 		SaveLinkFolderInput = AddTextField(Col, NSLOCTEXT("SharedWorld", "StFolderHint", "Folder, e.g. SharedWorlds (empty = top level)"),
-			bLinked ? SharedWorldUe::ToFString(Entry->SaveRemote).RightChop(SharedWorldUe::ToFString(Entry->SaveRemote).Find(TEXT(":")) + 1) : Matching[0].Folder);
+			bLinked ? LinkedRemote.RightChop(LinkedRemote.Find(TEXT(":")) + 1) : Matching[0].Folder);
 		UUniformGridPanel* Grid = WidgetTree->ConstructWidget<UUniformGridPanel>();
 		Grid->SetSlotPadding(FMargin(0.f, 0.f, 8.f, 8.f));
 		Col->AddChildToVerticalBox(Grid);

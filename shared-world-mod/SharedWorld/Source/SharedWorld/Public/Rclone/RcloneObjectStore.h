@@ -33,3 +33,25 @@ public:
 private:
 	FString Fs;
 };
+
+#include "SharedWorldCore/Storage/LogRepository.h"
+
+/**
+ * sw::ILogStore on an rclone path: the world record of a world stored on any rclone provider (see sw::LogRepository).
+ * Entries are small JSON files with unique names; rclone overwrites but never needs to here, and it reports no
+ * trustworthy server time, so the repository decides races by name with a settle wait.
+ */
+class SHAREDWORLD_API FRcloneLogStore final : public sw::ILogStore
+{
+public:
+	explicit FRcloneLogStore(FString InFs);
+	bool ExclusiveCreate() const override { return false; }
+	sw::Result<std::vector<sw::LogEntryInfo>> List(const std::string& Dir) override;
+	sw::Result<std::string> Read(const std::string& Dir, const sw::LogEntryInfo& Entry) override;
+	sw::Result<sw::LogEntryInfo> Create(const std::string& Dir, const std::string& Name, const std::string& Data) override;
+	sw::Status Delete(const std::string& Dir, const sw::LogEntryInfo& Entry) override;
+	std::string Describe() const override;
+
+private:
+	FString Fs;
+};

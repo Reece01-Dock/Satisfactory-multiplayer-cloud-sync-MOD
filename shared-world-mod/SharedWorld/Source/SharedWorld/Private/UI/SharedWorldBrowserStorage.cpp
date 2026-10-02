@@ -813,7 +813,8 @@ void USharedWorldBrowserWidget::OnStorageUseForSaves()
 	TArray<FString> ToMove;
 	for (const sw::WorldEntry& E : S->GetConfiguredWorlds())
 	{
-		if (E.Relation == sw::WorldRelation::Owned && SharedWorldUe::ToFString(E.SaveRemote) != Conn.Fs()) ToMove.Add(SharedWorldUe::ToFString(E.WorldId));
+		const bool bAlreadyThere = E.Provider.Kind == sw::ProviderKind::Rclone && SharedWorldUe::ToFString(E.Provider.Remote) == Conn.Fs();
+		if (E.Relation == sw::WorldRelation::Owned && !bAlreadyThere) ToMove.Add(SharedWorldUe::ToFString(E.WorldId));
 	}
 	if (ToMove.Num() == 0) return;
 
@@ -821,8 +822,8 @@ void USharedWorldBrowserWidget::OnStorageUseForSaves()
 	Spec.Tone = ESharedWorldTone::Healthy;
 	Spec.Title = FText::Format(NSLOCTEXT("SharedWorld", "MoveTitle", "Move your existing worlds to {0}?"), FText::FromString(Conn.Label));
 	Spec.Body = FText::Format(NSLOCTEXT("SharedWorld", "MoveBody",
-		"{0} of your worlds keep their saves somewhere else. Moving copies their saves to {1} and they save there from now on. "
-		"The old copies stay where they are. Friends who host these worlds will need to link {1}."),
+		"{0} of your worlds are stored somewhere else. Moving copies everything (the world record, who is hosting, history and saves) to {1}, and the world runs from {1} from now on. "
+		"The old copy is kept but frozen so the world can never continue in two places. Friends link {1} once to keep playing."),
 		FText::AsNumber(ToMove.Num()), FText::FromString(Conn.Label));
 	Spec.ConfirmLabel = NSLOCTEXT("SharedWorld", "MoveGo", "Move Them");
 	Spec.CancelLabel = NSLOCTEXT("SharedWorld", "MoveLater", "Only New Worlds");
@@ -853,7 +854,7 @@ void USharedWorldBrowserWidget::MoveWorldsSequentially(TArray<FString> WorldIds,
 	StorageNotice = FString::Printf(TEXT("Moving saves (%d of %d)... keep the game open."), Index + 1, WorldIds.Num());
 	QueueStorageRefresh();
 	TWeakObjectPtr<USharedWorldBrowserWidget> Weak(this);
-	S->MoveWorldSavesTo(WorldIds[Index], RemoteName, [Weak, WorldIds, RemoteName, Index, Failed](bool bOk, const FString& Message)
+	S->MoveWorldTo(WorldIds[Index], RemoteName, [Weak, WorldIds, RemoteName, Index, Failed](bool bOk, const FString& Message)
 	{
 		USharedWorldBrowserWidget* Self = Weak.Get();
 		if (!Self) return;

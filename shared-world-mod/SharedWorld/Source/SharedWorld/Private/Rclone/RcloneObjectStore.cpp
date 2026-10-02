@@ -2,7 +2,9 @@
 
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
+#include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Rclone/RcloneRuntime.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -236,4 +238,121 @@ sw::Result<std::vector<std::string>> FRcloneObjectStore::List()
 std::string FRcloneObjectStore::Describe() const
 {
 	return "rclone:" + FStringToUtf8(Fs); // never contains credentials: those live in rclone.conf
+}
+
+// ------------------------------------------------------------------ FRcloneLogStore
+
+namespace
+{
+	/** Log entry names: digits, letters, '.', '-' only (they become path segments). */
+	bool IsSafeName(const std::string& Name)
+	{
+		if (Name.empty() || Name.size() > 96) return false;
+		for (char C : Name)
+		{
+			const bool bOk = (C >= 'a' && C <= 'z') || (C >= '0' && C <= '9') || C == '.' || C == '-';
+			if (!bOk) return false;
+		}
+		return Name.find("..") == std::string::npos;
+	}
+
+	FString LogTempDir()
+	{
+		return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("SharedWorldLog"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	}
+
+	sw::Error NetworkOr(const FRcloneResult& R, const char* What)
+	{
+		sw::Error E = MapError(R, What);
+		// An upload whose outcome we could not see may or may not have landed: the repository re-reads to find out.
+		if (E.Code == sw::ErrorCode::Io) E.Code = sw::ErrorCode::Network;
+		return E;
+	}
+}
+
+FRcloneLogStore::FRcloneLogStore(FString InFs) : Fs(MoveTemp(InFs)) {}
+
+sw::Result<std::vector<sw::LogEntryInfo>> FRcloneLogStore::List(const std::string& Dir)
+{
+	const TSharedRef<FJsonObject> Opt = MakeShared<FJsonObject>();
+	Opt->SetBoolField(TEXT("filesOnly"), true);
+	Opt->SetBoolField(TEXT("noModTime"), true);
+	Opt->SetBoolField(TEXT("noMimeType"), true);
+	const TSharedRef<FJsonObject> In = MakeShared<FJsonObject>();
+	In->SetStringField(TEXT("fs"), Fs);
+	In->SetStringField(TEXT("remote"), Utf8ToFString(Dir));
+	In->SetObjectField(TEXT("opt"), Opt);
+	const FRcloneResult R = FRcloneRuntime::Get().Rpc(TEXT("operations/list"), ToJson(In));
+	std::vector<sw::LogEntryInfo> Out;
+	if (!R.bOk)
+	{
+		const sw::Error E = MapError(R, "list world record");
+		if (E.Code == sw::ErrorCode::NotFound) return Out; // no world here yet
+		return E;
+	}
+	if (const TSharedPtr<FJsonObject> Body = ParseJson(R.Output))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+		if (Body->TryGetArrayField(TEXT("list"), Items) && Items)
+		{
+			for (const TSharedPtr<FJsonValue>& V : *Items)
+			{
+				const TSharedPtr<FJsonObject>* Item = nullptr;
+				FString Name;
+				if (V.IsValid() && V->TryGetObject(Item) && Item && (*Item)->TryGetStringField(TEXT("Name"), Name))
+				{
+					const std::string N = FStringToUtf8(Name);
+					if (IsSafeName(N)) Out.push_back(sw::LogEntryInfo{N, N, 0});
+				}
+			}
+		}
+	}
+	return Out;
+}
+
+sw::Result<std::string> FRcloneLogStore::Read(const std::string& Dir, const sw::LogEntryInfo& Entry)
+{
+	if (!IsSafeName(Entry.Name)) return sw::MakeError(sw::ErrorCode::Invalid, "invalid record entry name");
+	const FString Tmp = LogTempDir();
+	IFileManager::Get().MakeDirectory(*Tmp, true);
+	ON_SCOPE_EXIT { IFileManager::Get().DeleteDirectory(*Tmp, false, true); };
+	FRcloneResult R;
+	if (!CopyFile(Fs, Utf8ToFString(Dir) + TEXT("/") + Utf8ToFString(Entry.Name), Tmp, TEXT("entry.json"), R))
+	{
+		return MapError(R, "read world record");
+	}
+	auto Text = sw::file::ReadAll(FStringToUtf8(FPaths::Combine(Tmp, TEXT("entry.json"))), int64_t(4) << 20);
+	if (!Text) return Text.Err();
+	return *Text;
+}
+
+sw::Result<sw::LogEntryInfo> FRcloneLogStore::Create(const std::string& Dir, const std::string& Name, const std::string& Data)
+{
+	if (!IsSafeName(Name)) return sw::MakeError(sw::ErrorCode::Invalid, "invalid record entry name");
+	const FString Tmp = LogTempDir();
+	IFileManager::Get().MakeDirectory(*Tmp, true);
+	ON_SCOPE_EXIT { IFileManager::Get().DeleteDirectory(*Tmp, false, true); };
+	if (sw::Status W = sw::file::WriteAtomic(FStringToUtf8(FPaths::Combine(Tmp, TEXT("entry.json"))), Data); !W) return W.Err();
+	FRcloneResult R;
+	if (!CopyFile(Tmp, TEXT("entry.json"), Fs, Utf8ToFString(Dir) + TEXT("/") + Utf8ToFString(Name), R))
+	{
+		return NetworkOr(R, "write world record");
+	}
+	return sw::LogEntryInfo{Name, Name, 0};
+}
+
+sw::Status FRcloneLogStore::Delete(const std::string& Dir, const sw::LogEntryInfo& Entry)
+{
+	if (!IsSafeName(Entry.Name)) return sw::MakeError(sw::ErrorCode::Invalid, "invalid record entry name");
+	const TSharedRef<FJsonObject> In = MakeShared<FJsonObject>();
+	In->SetStringField(TEXT("fs"), Fs);
+	In->SetStringField(TEXT("remote"), Utf8ToFString(Dir) + TEXT("/") + Utf8ToFString(Entry.Name));
+	const FRcloneResult R = FRcloneRuntime::Get().Rpc(TEXT("operations/deletefile"), ToJson(In));
+	if (!R.bOk && MapError(R, "delete record entry").Code != sw::ErrorCode::NotFound) return MapError(R, "delete record entry");
+	return {};
+}
+
+std::string FRcloneLogStore::Describe() const
+{
+	return "rclone:" + FStringToUtf8(Fs);
 }

@@ -446,7 +446,7 @@ void USharedWorldBrowserWidget::ShowDetails()
 void USharedWorldBrowserWidget::ShowCreateWizard()
 {
 	SelectedSaveName.Reset();
-	PendingSaveConnection = FRcloneConnections::GetDefaultSaveRemote(); // "Use for Saves" pre-selects; still changeable
+	PendingSaveConnection.Reset(); // an active provider already holds new worlds completely
 	SuggestedWorldName.Reset();
 	PendingWorldName.Reset();
 	CreateError.Reset();

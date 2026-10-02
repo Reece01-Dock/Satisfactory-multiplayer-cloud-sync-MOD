@@ -78,7 +78,8 @@ namespace sw
 			return ValidateFolder(FolderPath);
 		case ProviderKind::Rclone:
 		{
-			if (Remote.empty() || Remote.size() > 1024 || Remote.find(':') == std::string::npos) return MakeError(ErrorCode::Invalid, "invalid storage location");
+			if (Remote.empty()) return {}; // a known world that is not linked on this PC yet
+			if (Remote.size() > 1024 || Remote.find(':') == std::string::npos) return MakeError(ErrorCode::Invalid, "invalid storage location");
 			if (Remote.find("..") != std::string::npos) return MakeError(ErrorCode::Invalid, "storage location must not contain '..'");
 			for (unsigned char Ch : Remote) if (Ch < 0x20) return MakeError(ErrorCode::Invalid, "storage location contains control characters");
 			return {};
@@ -399,6 +400,12 @@ namespace sw
 			// The whole world on an rclone provider: an append-only log for the record/state/locks (safe without any
 			// conditional write) and content-addressed save objects next to it.
 			if (!Env.OpenRemoteLogStore || !Env.OpenRemoteObjects) return MakeError(ErrorCode::Unsupported, "the storage engine isn't available");
+			if (Entry.Provider.Remote.empty())
+			{
+				const std::string Shown = Entry.Provider.Label.empty() ? Entry.Provider.Backend : Entry.Provider.Label;
+				return MakeError(ErrorCode::Unsupported,
+					"This world is stored on " + Shown + ". Link " + Shown + " in the world's Storage tab " + SaveStorageNotLinkedPhrase + ".");
+			}
 			std::string Fs = Entry.Provider.Remote;
 			if (Fs.back() != ':' && Fs.back() != '/') Fs += '/';
 			Fs += Entry.WorldId;
