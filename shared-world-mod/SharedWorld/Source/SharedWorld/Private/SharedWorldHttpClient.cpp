@@ -98,10 +98,12 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 	Req->SetTimeout(static_cast<float>(TimeoutSeconds));
 
 	TSharedRef<FCompletion, ESPMode::ThreadSafe> State = MakeShared<FCompletion, ESPMode::ThreadSafe>();
-	// Capture Req so the request stays alive if Send() soft-abandons before completion.
-	// Never Unbind+destroy the request from a worker during engine exit — that races
-	// FHttpModule teardown and has caused hard machine lockups.
-	Req->OnProcessRequestComplete().BindLambda([State, Req](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk)
+	// Do NOT capture Req here: the delegate lives inside Req, so a strong capture is a
+	// reference cycle that leaks every request and its whole response body (UE never
+	// unbinds after completion). FHttpManager keeps an in-flight request alive on its
+	// own, so a soft-abandoned request is still safe. Never Unbind from a worker
+	// during engine exit — that races FHttpModule teardown (hard machine lockups).
+	Req->OnProcessRequestComplete().BindLambda([State](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk)
 	{
 		State->bConnectionFailed = !bOk || !Response.IsValid();
 		State->bFinished = true;
@@ -134,6 +136,9 @@ sw::Result<sw::HttpResponse> FSharedWorldHttpClient::Send(const sw::HttpRequest&
 			return sw::MakeError(sw::ErrorCode::Network, "network request timed out");
 		}
 	}
+
+	// Completed normally (callback already ran), so unbinding is safe and releases the lambda.
+	Req->OnProcessRequestComplete().Unbind();
 
 	if (State->bConnectionFailed || !Req->GetResponse().IsValid())
 	{
