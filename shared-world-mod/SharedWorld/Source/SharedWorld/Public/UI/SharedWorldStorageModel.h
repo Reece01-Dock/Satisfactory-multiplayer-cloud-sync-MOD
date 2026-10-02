@@ -77,6 +77,8 @@ struct FSharedWorldStorageProvider
 	/** Last successful read/write test of the connection (rclone providers). */
 	FDateTime VerifiedUtc;
 	bool bVerified = false;
+	/** New worlds keep their saves here by default (one rclone connection at most). */
+	bool bDefaultForSaves = false;
 
 	bool IsComingSoon() const { return !bAvailable; }
 	/** "Connect" for sign-in style providers, "Configure" for ones needing keys or an address. */

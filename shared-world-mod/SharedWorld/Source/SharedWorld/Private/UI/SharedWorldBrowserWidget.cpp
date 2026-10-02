@@ -1,4 +1,5 @@
 #include "UI/SharedWorldBrowserWidget.h"
+#include "Rclone/RcloneProviders.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
@@ -445,6 +446,7 @@ void USharedWorldBrowserWidget::ShowDetails()
 void USharedWorldBrowserWidget::ShowCreateWizard()
 {
 	SelectedSaveName.Reset();
+	PendingSaveConnection = FRcloneConnections::GetDefaultSaveRemote(); // "Use for Saves" pre-selects; still changeable
 	SuggestedWorldName.Reset();
 	PendingWorldName.Reset();
 	CreateError.Reset();

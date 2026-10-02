@@ -199,6 +199,8 @@ private:
 	UFUNCTION() void OnConnectLearnMore();
 	UFUNCTION() void OnStorageRcloneTest();
 	UFUNCTION() void OnStorageRcloneDisconnect();
+	/** Makes the selected rclone connection the default home for new worlds' saves (or stops). */
+	UFUNCTION() void OnStorageUseForSaves();
 	/** Layout hook for later: a connected provider that is not the active one. Switching is not implemented yet. */
 	UFUNCTION() void OnStorageSetActive();
 
@@ -282,6 +284,8 @@ private:
 	FString StorageSearch;
 	/** Development-safe message for display-only providers. */
 	FString StorageNotice;
+	/** StorageNotice reports a success (green) rather than a problem. */
+	bool bStorageNoticeOk = false;
 	/** Result lines of the last rclone engine self-test (Diagnostics tab). */
 	FString RcloneSelfTestText;
 	bool bRcloneSelfTestRunning = false;

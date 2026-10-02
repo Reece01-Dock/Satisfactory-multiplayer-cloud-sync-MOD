@@ -89,6 +89,9 @@ public:
 	static bool Save(const TArray<FRcloneConnection>& Connections);
 	/** Unused remote name for a new connection of this backend type. */
 	static FString MakeRemoteName(const FString& BackendType, const TArray<FRcloneConnection>& Existing);
+	/** Connection new worlds keep their saves on by default (rclone remote name), or empty for the world record's own store. */
+	static FString GetDefaultSaveRemote();
+	static void SetDefaultSaveRemote(const FString& RemoteName);
 };
 
 struct FRcloneAbout

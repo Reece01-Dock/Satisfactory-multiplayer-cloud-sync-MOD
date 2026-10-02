@@ -13,6 +13,7 @@
 #include "Components/UniformGridSlot.h"
 #include "Async/Async.h"
 #include "HAL/PlatformProcess.h"
+#include "Rclone/RcloneProviders.h"
 #include "Rclone/RcloneRuntime.h"
 #include "Rclone/RcloneSelfTest.h"
 #include "Misc/ConfigCacheIni.h"
@@ -466,6 +467,14 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		Pills->AddChildToHorizontalBox(MakeSolidBadge(WidgetTree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "ActiveBadge", "ACTIVE"), 12))
 			->SetVerticalAlignment(VAlign_Center);
 	}
+	if (P->bDefaultForSaves)
+	{
+		if (UHorizontalBoxSlot* DS = Pills->AddChildToHorizontalBox(MakeSolidBadge(WidgetTree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "SavesBadge", "USED FOR SAVES"), 12)))
+		{
+			DS->SetVerticalAlignment(VAlign_Center);
+			DS->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+		}
+	}
 	if (UHorizontalBoxSlot* PS = Pills->AddChildToHorizontalBox(P->bConnected
 		? MakePill(WidgetTree, ESharedWorldTone::Healthy, NSLOCTEXT("SharedWorld", "Connected", "Connected"), 13)
 		: MakePill(WidgetTree, ESharedWorldTone::Inactive, NSLOCTEXT("SharedWorld", "NotConnected", "Not Connected"), 13)))
@@ -496,8 +505,11 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 			P->bVerified ? NSLOCTEXT("SharedWorld", "RcVerified", "Read/write test passed")
 				: NSLOCTEXT("SharedWorld", "RcNotVerified", "Last read/write test failed")))->SetPadding(FMargin(0.f, 0.f, 0.f, 6.f));
 		UTextBlock* Note = MakeText(WidgetTree, FontSmall, TextMuted);
-		Note->SetText(NSLOCTEXT("SharedWorld", "RcNotYetWorlds",
-			"Ready for save files: choose it under \"Save files\" when you create a world. Friends link it from that world's Storage tab."));
+		Note->SetText(P->bDefaultForSaves
+			? NSLOCTEXT("SharedWorld", "RcIsDefault",
+				"New worlds keep their saves here (you can still pick another place when you create one). Existing worlds keep theirs where they are. Friends link it from a world's Storage tab.")
+			: NSLOCTEXT("SharedWorld", "RcNotYetWorlds",
+				"Ready for save files: press Use for Saves, or choose it under \"Save files\" when you create a world. Friends link it from that world's Storage tab."));
 		Host->AddChildToVerticalBox(Note)->SetPadding(FMargin(0.f, 2.f, 0.f, 8.f));
 	}
 
@@ -584,7 +596,7 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 	if (!StorageNotice.IsEmpty())
 	{
 		UButton* Unused = nullptr;
-		Host->AddChildToVerticalBox(MakeNoticePanel(WidgetTree, ESharedWorldTone::Warning,
+		Host->AddChildToVerticalBox(MakeNoticePanel(WidgetTree, bStorageNoticeOk ? ESharedWorldTone::Healthy : ESharedWorldTone::Warning,
 			FText::FromString(StorageNotice), FText::GetEmpty(), Unused))
 			->SetPadding(FMargin(0.f, 12.f, 0.f, 0.f));
 	}
@@ -592,7 +604,7 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 	// ---- actions, by state
 	UVerticalBox* Buttons = WidgetTree->ConstructWidget<UVerticalBox>();
 	Host->AddChildToVerticalBox(Buttons)->SetPadding(FMargin(0.f, 16.f, 0.f, 0.f));
-	enum class EAct : uint8 { Reconfigure, Disconnect, Connect, SetActive, RcloneTest, RcloneDisconnect };
+	enum class EAct : uint8 { Reconfigure, Disconnect, Connect, SetActive, RcloneTest, RcloneDisconnect, UseForSaves };
 	auto AddButton = [&](ESharedWorldButtonRole Role, const FText& Label, EAct Act)
 	{
 		TObjectPtr<UTextBlock> L;
@@ -604,6 +616,7 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 		case EAct::SetActive: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageSetActive); break;
 		case EAct::RcloneTest: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageRcloneTest); B->SetIsEnabled(!bRcloneTestRunning); break;
 		case EAct::RcloneDisconnect: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageRcloneDisconnect); break;
+		case EAct::UseForSaves: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageUseForSaves); break;
 		default: B->OnClicked.AddDynamic(this, &USharedWorldBrowserWidget::OnStorageConnectSelected); break;
 		}
 		Buttons->AddChildToVerticalBox(B)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
@@ -616,6 +629,14 @@ void USharedWorldBrowserWidget::PopulateProviderDetails(UVerticalBox* Host)
 	}
 	else if (P->IsRcloneBacked() && P->bConnected)
 	{
+		if (P->bDefaultForSaves)
+		{
+			AddButton(ESharedWorldButtonRole::Secondary, NSLOCTEXT("SharedWorld", "StopUsingForSaves", "Stop Using for Saves"), EAct::UseForSaves);
+		}
+		else if (P->bVerified)
+		{
+			AddButton(ESharedWorldButtonRole::Config, NSLOCTEXT("SharedWorld", "UseForSaves", "Use for Saves"), EAct::UseForSaves);
+		}
 		AddButton(ESharedWorldButtonRole::Secondary, bRcloneTestRunning ? NSLOCTEXT("SharedWorld", "Testing", "Testing...")
 			: NSLOCTEXT("SharedWorld", "TestConnection", "Test Connection"), EAct::RcloneTest);
 		AddButton(ESharedWorldButtonRole::Danger, NSLOCTEXT("SharedWorld", "DisconnectGit", "Disconnect"), EAct::RcloneDisconnect);
@@ -673,6 +694,7 @@ void USharedWorldBrowserWidget::SelectProvider(const FString& ProviderId)
 	if (ProviderId.IsEmpty()) return;
 	SelectedProviderId = ProviderId;
 	StorageNotice.Reset();
+	bStorageNoticeOk = false;
 	QueueStorageRefresh();
 }
 
@@ -777,6 +799,24 @@ void USharedWorldBrowserWidget::OnStorageReconfigure()
 	Page = EPage::LinkGitHub;
 	ListScroll = nullptr;
 	ScheduleRebuild();
+}
+
+void USharedWorldBrowserWidget::OnStorageUseForSaves()
+{
+	// Toggles the default for NEW worlds only. Existing worlds keep their saves where they are (moving them is separate).
+	FString Remote;
+	for (const FRcloneConnection& C : FRcloneConnections::Load())
+	{
+		if (C.CatalogId == SelectedProviderId) { Remote = C.RemoteName; break; }
+	}
+	if (Remote.IsEmpty()) return;
+	const bool bWasDefault = FRcloneConnections::GetDefaultSaveRemote() == Remote;
+	FRcloneConnections::SetDefaultSaveRemote(bWasDefault ? FString() : Remote);
+	bStorageNoticeOk = true;
+	StorageNotice = bWasDefault
+		? FString(TEXT("New worlds will keep their saves with the world record again."))
+		: FString(TEXT("New worlds will keep their saves here."));
+	QueueStorageRefresh();
 }
 
 void USharedWorldBrowserWidget::OnStorageSetActive()

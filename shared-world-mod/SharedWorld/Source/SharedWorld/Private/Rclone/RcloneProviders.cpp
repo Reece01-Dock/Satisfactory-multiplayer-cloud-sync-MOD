@@ -4,6 +4,7 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Math/RandomStream.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
@@ -423,4 +424,24 @@ bool RcloneActions::ProbeStorage(const FString& Fs, FString& OutError)
 	if (!R.Ok()) return Fail(TEXT("Cleaning up"), R.Err());
 	Cleanup();
 	return true;
+}
+
+FString FRcloneConnections::GetDefaultSaveRemote()
+{
+	FString Remote;
+	if (GConfig) GConfig->GetString(TEXT("SharedWorld"), TEXT("DefaultSaveRemote"), Remote, GGameUserSettingsIni);
+	if (Remote.IsEmpty()) return Remote;
+	// Only a connection that still exists counts (it may have been disconnected since).
+	for (const FRcloneConnection& C : Load())
+	{
+		if (C.RemoteName == Remote) return Remote;
+	}
+	return FString();
+}
+
+void FRcloneConnections::SetDefaultSaveRemote(const FString& RemoteName)
+{
+	if (!GConfig) return;
+	GConfig->SetString(TEXT("SharedWorld"), TEXT("DefaultSaveRemote"), *RemoteName, GGameUserSettingsIni);
+	GConfig->Flush(false, GGameUserSettingsIni);
 }

@@ -152,6 +152,7 @@ FSharedWorldStorageCatalog FSharedWorldStorageCatalog::Build(USharedWorldSubsyst
 	FRcloneRuntime& Rc = FRcloneRuntime::Get();
 	const bool bEngine = Rc.IsInstalled() && Rc.EnsureLoaded();
 	const TArray<FRcloneConnection> Connections = FRcloneConnections::Load();
+	const FString DefaultSaveRemote = FRcloneConnections::GetDefaultSaveRemote();
 	if (bEngine && !FRcloneProviders::Get().IsValid())
 	{
 		FString LoadError; // parsed once per session; failure just leaves the curated cards display-only
@@ -183,6 +184,7 @@ FSharedWorldStorageCatalog FSharedWorldStorageCatalog::Build(USharedWorldSubsyst
 				P.bConnected = true;
 				P.bRuntimeBacked = true;
 				if (P.Location.IsEmpty()) P.Location = Conn.Folder;
+				if (!DefaultSaveRemote.IsEmpty() && Conn.RemoteName == DefaultSaveRemote) P.bDefaultForSaves = true;
 				if (Conn.bVerified)
 				{
 					// Observed, not assumed: the connect / test probe wrote, read back (hash-checked) and deleted a file.

@@ -484,6 +484,7 @@ void USharedWorldBrowserWidget::OnStorageRcloneTest()
 				if (bOk) C->VerifiedUtc = FDateTime::UtcNow();
 				FRcloneConnections::Save(All);
 			}
+			Self->bStorageNoticeOk = bOk;
 			Self->StorageNotice = bOk ? TEXT("Connection test passed.") : (TEXT("Connection test failed: ") + Error.Left(300));
 			Self->QueueStorageRefresh();
 		});
@@ -512,6 +513,7 @@ void USharedWorldBrowserWidget::OnStorageRcloneDisconnect()
 		TArray<FRcloneConnection> All = FRcloneConnections::Load();
 		All.RemoveAll([&](const FRcloneConnection& C) { return C.RemoteName == Copy.RemoteName; });
 		FRcloneConnections::Save(All);
+		if (FRcloneConnections::GetDefaultSaveRemote().IsEmpty()) FRcloneConnections::SetDefaultSaveRemote(FString()); // was this one: clear the stale name
 		if (Self)
 		{
 			Self->StorageNotice.Reset();
