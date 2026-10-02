@@ -122,6 +122,8 @@ public:
 
 	/** Kick a lightweight cloud refresh without freezing the UI. */
 	void RequestDiscoveryRefresh();
+	/** True while a background cloud metadata refresh is running (the UI shows a loading hint, not a freeze). */
+	bool IsDiscoveryRefreshing() const { return bSummaryRefreshInFlight; }
 	TArray<struct FSharedWorldPendingInviteView> GetPendingInviteViews() const;
 	bool NeedsWelcomeStorageConnect() const;
 	void MarkWelcomeDone();
@@ -247,6 +249,8 @@ public:
 
 	/** Show a transparent top toast for a player-facing error / notice. */
 	void ShowPlayerError(const FText& Message);
+	/** A failed Shared World session: dialog with a plain-language title, the player-facing message, optional technical Details and Try Again. */
+	void ShowSessionErrorDialog(const FString& WorldId, const FString& Code, const FString& Message, const FString& Detail, bool bRetryable);
 	/** Queue a notice to show after travel (version bumps during Play). */
 	void QueuePlayerNotice(const FText& Message);
 	void FlushPendingPlayerNotice();
@@ -304,6 +308,7 @@ private:
 	mutable FCriticalSection SummaryMutex;
 	TMap<FString, FString> LastLocalStates; // edge-detection for HandleSessionTransition
 	TMap<FString, uint64> LastSequences;    // SessionView::Sequence last broadcast
+	TMap<FString, FString> LastPlayerKeys;  // connected-player set last announced (OnChanged on join/leave)
 	TSet<FString> JoinsInFlight; // worlds whose join attempt the game is running
 	bool bSummaryRefreshInFlight = false;
 
@@ -331,9 +336,10 @@ private:
 	FDelegateHandle NetworkFailureHandle;
 	FDelegateHandle ActorsInitializedHandle;
 	TWeakObjectPtr<UWorld> MenuWorld;
-	TWeakObjectPtr<class USharedWorldPanel> MenuPanel;
 	TWeakObjectPtr<class USharedWorldMigrationOverlay> MigrationOverlay;
 	TWeakObjectPtr<class UUserWidget> ActiveErrorPopup;
+	TWeakObjectPtr<class USharedWorldModal> ActiveSessionDialog;
+	FString LastSessionErrorKey;
 	FString LastOverlayMessage;
 	/** Survives map travel: version-bump notices are shown after the world loads. */
 	FString PendingPlayerNotice;

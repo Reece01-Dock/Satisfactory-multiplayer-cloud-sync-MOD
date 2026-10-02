@@ -32,15 +32,25 @@ TSharedRef<SWidget> USharedWorldMigrationOverlay::RebuildWidget()
 
 		CardSize = WidgetTree->ConstructWidget<USizeBox>();
 		CardBorder = WidgetTree->ConstructWidget<UBorder>();
-		CardBorder->SetBrushColor(FLinearColor(0.04f, 0.045f, 0.055f, 0.92f));
 		CardBorder->SetPadding(FMargin(20.f, 16.f));
 		CardSize->AddChild(CardBorder);
 
 		UVerticalBox* Col = WidgetTree->ConstructWidget<UVerticalBox>();
 		CardBorder->SetContent(Col);
 
-		HeadlineText = MakeText(WidgetTree, 22, Accent, true);
-		Col->AddChildToVerticalBox(HeadlineText)->SetPadding(FMargin(0, 0, 0, 6));
+		// Header: tone icon (shape + colour) then the headline.
+		UHorizontalBox* Head = WidgetTree->ConstructWidget<UHorizontalBox>();
+		Col->AddChildToVerticalBox(Head)->SetPadding(FMargin(0, 0, 0, 6));
+		ToneIconHolder = WidgetTree->ConstructWidget<UBorder>();
+		ToneIconHolder->SetBrush(RoundedBrush(Clear, 0.f));
+		ToneIconHolder->SetPadding(FMargin(0.f));
+		Head->AddChildToHorizontalBox(ToneIconHolder)->SetVerticalAlignment(VAlign_Center);
+		HeadlineText = MakeText(WidgetTree, 22, TextPrimary, true);
+		if (UHorizontalBoxSlot* HS = Head->AddChildToHorizontalBox(HeadlineText))
+		{
+			HS->SetPadding(FMargin(12.f, 0.f, 0.f, 0.f));
+			HS->SetVerticalAlignment(VAlign_Center);
+		}
 		DetailText = MakeText(WidgetTree, 14, TextPrimary);
 		Col->AddChildToVerticalBox(DetailText)->SetPadding(FMargin(0, 0, 0, 8));
 
@@ -48,7 +58,7 @@ TSharedRef<SWidget> USharedWorldMigrationOverlay::RebuildWidget()
 		Col->AddChildToVerticalBox(ProgressLabelText)->SetPadding(FMargin(0, 0, 0, 6));
 
 		ProgressTrack = WidgetTree->ConstructWidget<UBorder>();
-		ProgressTrack->SetBrushColor(FLinearColor(0.08f, 0.09f, 0.11f, 0.95f));
+		ProgressTrack->SetBrush(RoundedBrush(Clear, 0.f));
 		ProgressTrack->SetPadding(FMargin(0.f));
 		ProgressTrack->SetVisibility(ESlateVisibility::Collapsed);
 		Col->AddChildToVerticalBox(ProgressTrack)->SetPadding(FMargin(0, 0, 0, 8));
@@ -57,9 +67,14 @@ TSharedRef<SWidget> USharedWorldMigrationOverlay::RebuildWidget()
 		BarBox->SetWidthOverride(280.f);
 		ProgressTrack->SetContent(BarBox);
 		ProgressBar = WidgetTree->ConstructWidget<UProgressBar>();
+		FProgressBarStyle BarStyle;
+		BarStyle.SetBackgroundImage(RoundedBrush(FLinearColor(1.f, 1.f, 1.f, 0.10f), 5.f));
+		BarStyle.SetFillImage(RoundedBrush(FLinearColor::White, 5.f));
+		BarStyle.SetMarqueeImage(RoundedBrush(FLinearColor::White, 5.f));
+		ProgressBar->SetWidgetStyle(BarStyle);
 		ProgressBar->SetPercent(0.f);
-		ProgressBar->SetFillColorAndOpacity(Accent);
 		BarBox->AddChild(ProgressBar);
+		ApplyTone(ESharedWorldTone::Warning);
 
 		StepText = MakeText(WidgetTree, 12, TextMuted);
 		Col->AddChildToVerticalBox(StepText);
@@ -72,6 +87,20 @@ TSharedRef<SWidget> USharedWorldMigrationOverlay::RebuildWidget()
 		ApplyLayout(ELayoutMode::CenterMigration);
 	}
 	return Super::RebuildWidget();
+}
+
+void USharedWorldMigrationOverlay::ApplyTone(ESharedWorldTone Tone)
+{
+	const FLinearColor C = ToneColor(Tone);
+	if (CardBorder)
+	{
+		FLinearColor Edge = C;
+		Edge.A = 0.75f;
+		CardBorder->SetBrush(RoundedBrush(FLinearColor(0.04f, 0.045f, 0.055f, 0.94f), RadiusL, Edge, 2.f));
+	}
+	if (ToneIconHolder) ToneIconHolder->SetContent(MakeToneIcon(WidgetTree, Tone, 20.f));
+	if (HeadlineText) HeadlineText->SetColorAndOpacity(FSlateColor(TextPrimary));
+	if (ProgressBar) ProgressBar->SetFillColorAndOpacity(C);
 }
 
 void USharedWorldMigrationOverlay::ApplyLayout(ELayoutMode Mode)
@@ -89,7 +118,6 @@ void USharedWorldMigrationOverlay::ApplyLayout(ELayoutMode Mode)
 		CardSize->SetWidthOverride(320.f);
 		if (CardBorder)
 		{
-			CardBorder->SetBrushColor(FLinearColor(0.03f, 0.035f, 0.045f, 0.88f));
 			CardBorder->SetPadding(FMargin(14.f, 10.f));
 		}
 		if (HeadlineText) SharedWorldFg::ApplyMenuFont(HeadlineText, 16, true);
@@ -113,7 +141,6 @@ void USharedWorldMigrationOverlay::ApplyLayout(ELayoutMode Mode)
 		CardSize->SetWidthOverride(520.f);
 		if (CardBorder)
 		{
-			CardBorder->SetBrushColor(FLinearColor(0.04f, 0.045f, 0.055f, 0.94f));
 			CardBorder->SetPadding(FMargin(28.f, 22.f));
 		}
 		if (HeadlineText) SharedWorldFg::ApplyMenuFont(HeadlineText, 26, true);
@@ -157,9 +184,11 @@ void USharedWorldMigrationOverlay::SetMigrationProgress(float Percent01, const F
 		DisplayPercent = FMath::Max(DisplayPercent, TargetPercent - 0.08f);
 	}
 	SetProgressVisible(true);
-	if (ProgressBar && !bIndeterminate)
+	if (ProgressBar)
 	{
-		ProgressBar->SetPercent(DisplayPercent);
+		// Unknown duration shows a real marquee, not a fake percentage.
+		ProgressBar->SetIsMarquee(bIndeterminate);
+		if (!bIndeterminate) ProgressBar->SetPercent(DisplayPercent);
 	}
 	if (ProgressLabelText)
 	{
@@ -188,13 +217,7 @@ void USharedWorldMigrationOverlay::NativeTick(const FGeometry& MyGeometry, float
 	}
 	if (!ProgressBar) return;
 
-	if (bIndeterminateProgress)
-	{
-		ProgressPulse += InDeltaTime;
-		const float Wave = 0.18f + 0.62f * (0.5f + 0.5f * FMath::Sin(ProgressPulse * 2.4f));
-		ProgressBar->SetPercent(Wave);
-		return;
-	}
+	if (bIndeterminateProgress) return; // marquee animates itself
 
 	if (DisplayPercent < TargetPercent)
 	{
@@ -209,6 +232,7 @@ void USharedWorldMigrationOverlay::ShowMigration(const FText& Headline, const FT
 	ConnectedHideAt = 0.f;
 	bIndeterminateProgress = false;
 	ApplyLayout(ELayoutMode::CenterMigration);
+	ApplyTone(ESharedWorldTone::Warning);
 	SetProgressVisible(true);
 	if (HeadlineText) HeadlineText->SetText(Headline);
 	if (DetailText) DetailText->SetText(Detail);
@@ -226,6 +250,7 @@ void USharedWorldMigrationOverlay::ShowUploading(const FText& Headline, const FT
 	SetVisibility(ESlateVisibility::HitTestInvisible);
 	ConnectedHideAt = 0.f;
 	ApplyLayout(ELayoutMode::CornerSave);
+	ApplyTone(ESharedWorldTone::Working);
 	SetMigrationProgress(0.35f, NSLOCTEXT("SharedWorld", "UploadStepShort", "Uploading…"), true);
 	// Compact corner copy — keep the HUD readable.
 	if (HeadlineText)
@@ -248,6 +273,7 @@ void USharedWorldMigrationOverlay::ShowConnected(const FText& HostName)
 {
 	SetVisibility(ESlateVisibility::HitTestInvisible);
 	ApplyLayout(ELayoutMode::CenterMigration);
+	ApplyTone(ESharedWorldTone::Healthy);
 	SetMigrationProgress(1.f, NSLOCTEXT("SharedWorld", "MigDone", "Complete"), false);
 	if (HeadlineText) HeadlineText->SetText(NSLOCTEXT("SharedWorld", "Connected", "CONNECTED"));
 	if (DetailText) DetailText->SetText(FText::Format(NSLOCTEXT("SharedWorld", "NowHosting", "{0} is now hosting."), HostName));

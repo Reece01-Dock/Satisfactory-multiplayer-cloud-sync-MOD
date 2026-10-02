@@ -44,7 +44,6 @@
 #include "SharedWorldNetworkQuality.h"
 #include "SharedWorldHostResponder.h"
 #include "SharedWorldUEHostVerifier.h"
-#include "SharedWorldPanel.h"
 #include "SharedWorldUeConvert.h"
 #include "Services/SharedWorldCreationService.h"
 #include "Services/SharedWorldDiscoveryService.h"
@@ -55,6 +54,7 @@
 #include "UI/SharedWorldFgWidgets.h"
 #include "UI/SharedWorldGameInstanceModule.h"
 #include "UI/SharedWorldMigrationOverlay.h"
+#include "UI/SharedWorldModal.h"
 #include "UI/SharedWorldSessionWidget.h"
 
 using SharedWorldUe::Std;
@@ -368,7 +368,6 @@ void USharedWorldSubsystem::Deinitialize()
 	Runtimes.Empty();
 
 	HideMigrationOverlay();
-	MenuPanel.Reset();
 	MenuWorld.Reset();
 
 	Joiner = nullptr;
@@ -1666,6 +1665,15 @@ void USharedWorldSubsystem::HandleSessionTransition(FSharedWorldRuntime& Runtime
 		if (Host->IsHostingWorld(WorldId))
 		{
 			Runtime.Session->SetPlayers(Host->GetConnectedPlayers());
+			// Nothing else announces people joining/leaving, so UI that lists players (Manage Session) would have to poll.
+			FString PlayersKey;
+			for (const FSharedWorldFriendInfo& P : GetConnectedSessionPlayers()) PlayersKey += P.PlayerId + TEXT("|");
+			FString& PrevPlayersKey = LastPlayerKeys.FindOrAdd(WorldId);
+			if (PrevPlayersKey != PlayersKey)
+			{
+				PrevPlayersKey = PlayersKey;
+				OnChanged.Broadcast();
+			}
 			FlushPendingPlayerNotice();
 		}
 		else if (Host->GetWorldId() == WorldId)
@@ -1730,7 +1738,7 @@ void USharedWorldSubsystem::HandleSessionTransition(FSharedWorldRuntime& Runtime
 			const FString Msg = ToFString(View.Error->Message.empty() ? View.Error->Detail : View.Error->Message);
 			if (!Msg.IsEmpty())
 			{
-				ShowPlayerError(FText::FromString(Msg));
+				ShowSessionErrorDialog(WorldId, ToFString(View.Error->Code), Msg, ToFString(View.Error->Detail), View.Error->bRetryable);
 			}
 		}
 	}
@@ -2311,6 +2319,58 @@ void USharedWorldSubsystem::ShowPlayerError(const FText& Message)
 	UE_LOG(LogSharedWorld, Log, TEXT("[SharedWorld] event=player_notice_show ok=%d"), Popup ? 1 : 0);
 }
 
+void USharedWorldSubsystem::ShowSessionErrorDialog(const FString& WorldId, const FString& Code, const FString& Message, const FString& Detail, bool bRetryable)
+{
+	UE_LOG(LogSharedWorld, Warning, TEXT("[SharedWorld] event=session_error world=%s code=%s retryable=%d detail=%s"),
+		*WorldId, *Code, bRetryable ? 1 : 0, *Detail);
+	UGameInstance* GI = GetGameInstance();
+	APlayerController* PC = GI ? GI->GetFirstLocalPlayerController() : nullptr;
+	if (!PC)
+	{
+		ShowPlayerError(FText::FromString(Message)); // no controller to host a dialog: fall back to the toast
+		return;
+	}
+	const FString Key = WorldId + TEXT("|") + Code + TEXT("|") + Message;
+	if (Key == LastSessionErrorKey && ActiveSessionDialog.IsValid()) return;
+	LastSessionErrorKey = Key;
+	if (USharedWorldModal* Old = ActiveSessionDialog.Get()) Old->Close();
+
+	// Plain-language title; the backend message below it is already written for players.
+	FText Title = NSLOCTEXT("SharedWorld", "ErrGeneric", "Shared World problem");
+	if (Code == TEXT("STORAGE_UNREACHABLE")) Title = NSLOCTEXT("SharedWorld", "ErrStorage", "Unable to reach Shared World storage");
+	else if (Code == TEXT("LEASE_LOST")) Title = NSLOCTEXT("SharedWorld", "ErrLease", "Another host took over");
+	else if (Code == TEXT("NOT_A_MEMBER")) Title = NSLOCTEXT("SharedWorld", "ErrMember", "You don't have access to this world");
+	else if (Code == TEXT("INCOMPATIBLE")) Title = NSLOCTEXT("SharedWorld", "ErrIncompat", "This Shared World can't be joined");
+	else if (Code == TEXT("WORLD_NOT_FOUND")) Title = NSLOCTEXT("SharedWorld", "ErrNotFound", "Shared World not found");
+	else if (Code == TEXT("ALREADY_HOSTING_ELSEWHERE")) Title = NSLOCTEXT("SharedWorld", "ErrElsewhere", "Already hosting elsewhere");
+
+	FSharedWorldModalSpec Spec;
+	Spec.Tone = ESharedWorldTone::Problem;
+	Spec.Title = Title;
+	Spec.Body = FText::FromString(Message);
+	if (!Detail.IsEmpty() || !Code.IsEmpty())
+	{
+		Spec.Detail = FText::FromString(FString::Printf(TEXT("Code: %s\n%s"), *Code, *Detail));
+	}
+	if (bRetryable)
+	{
+		Spec.ConfirmLabel = NSLOCTEXT("SharedWorld", "ErrRetry", "Try Again");
+		Spec.CancelLabel = NSLOCTEXT("SharedWorld", "ErrClose", "Close");
+		Spec.ConfirmRole = ESharedWorldButtonRole::Config;
+		TWeakObjectPtr<USharedWorldSubsystem> Weak(this);
+		Spec.OnConfirm = [Weak, WorldId]()
+		{
+			if (USharedWorldSubsystem* Self = Weak.Get()) Self->Play(WorldId);
+		};
+	}
+	else
+	{
+		Spec.ConfirmLabel = NSLOCTEXT("SharedWorld", "ErrClose", "Close");
+		Spec.ConfirmRole = ESharedWorldButtonRole::Secondary;
+	}
+	ActiveSessionDialog = USharedWorldModal::Show(PC, Spec);
+}
+
 void USharedWorldSubsystem::QueuePlayerNotice(const FText& Message)
 {
 	const FString Key = Message.ToString();
@@ -2370,11 +2430,6 @@ void USharedWorldSubsystem::OnWorldBeginTearDown(UWorld* World)
 	if (World && MenuWorld.Get() == World)
 	{
 		MenuWorld.Reset();
-		if (USharedWorldPanel* Panel = MenuPanel.Get())
-		{
-			Panel->RemoveFromParent();
-		}
-		MenuPanel.Reset();
 	}
 	Host->OnWorldTearDown(World);
 	if (!ActiveWorldId.IsEmpty())

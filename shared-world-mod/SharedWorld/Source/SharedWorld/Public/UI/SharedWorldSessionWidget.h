@@ -35,7 +35,13 @@ private:
 	void Refresh();
 	void RebuildPlayersPanel(bool bForceMembersReload);
 	void RefreshSessionPlayersIfChanged();
+	/** Backend event (OnChanged): refresh whatever tab is showing. Replaces per-frame polling. */
+	void HandleBackendChanged();
+	/** Show text inside its card; collapse the card when there is nothing to say. */
+	static void SetCardText(UTextBlock* Text, const FText& Value);
 	void SetOverviewVisible(bool bVisible);
+	/** Re-style the four tab buttons so the active one is outlined in orange. */
+	void UpdateTabs();
 	void AddInviteRow(UVerticalBox* List, const FString& WorldId, const FString& PlayerId, const FString& DisplayName, const FString& SubLabel);
 	USharedWorldSubsystem* SW() const;
 
@@ -54,6 +60,7 @@ private:
 	UFUNCTION() void OnInviteConfirm();
 	UFUNCTION() void OnCopyInviteCode();
 
+	UPROPERTY() TArray<TObjectPtr<UButton>> TabButtons;
 	UPROPERTY() TObjectPtr<UTextBlock> TitleText;
 	UPROPERTY() TObjectPtr<UTextBlock> OverviewText;
 	UPROPERTY() TObjectPtr<UTextBlock> HostText;
@@ -76,6 +83,7 @@ private:
 
 	bool bShowAdvanced = false;
 	float RefreshAccum = 0.f;
+	FDelegateHandle ChangedHandle;
 	int32 ActiveTab = 0;
 	FString LastSessionPlayerKey;
 	bool bFriendsExpanded = false;

@@ -26,25 +26,21 @@ TSharedRef<SWidget> USharedWorldNoticeOverlay::RebuildWidget()
 		BannerSize = WidgetTree->ConstructWidget<USizeBox>();
 		BannerSize->SetWidthOverride(980.f);
 
+		// Toast: same rounded panel + tone icon as every other Shared Worlds surface.
+		FLinearColor Edge = ToneColor(ESharedWorldTone::Warning);
+		Edge.A = 0.75f;
 		BannerBorder = WidgetTree->ConstructWidget<UBorder>();
-		BannerBorder->SetBrushColor(FLinearColor(0.03f, 0.035f, 0.045f, 0.90f));
+		BannerBorder->SetBrush(RoundedBrush(FLinearColor(0.04f, 0.045f, 0.055f, 0.94f), RadiusL, Edge, 2.f));
 		BannerBorder->SetPadding(FMargin(0.f));
 		BannerSize->AddChild(BannerBorder);
 
 		UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
 		BannerBorder->SetContent(Row);
 
-		AccentBar = WidgetTree->ConstructWidget<UBorder>();
-		AccentBar->SetBrushColor(Accent);
-		AccentBar->SetPadding(FMargin(0.f));
-		USizeBox* AccentBox = WidgetTree->ConstructWidget<USizeBox>();
-		AccentBox->SetWidthOverride(4.f);
-		AccentBox->AddChild(AccentBar);
-		if (UHorizontalBoxSlot* AccentSlot = Row->AddChildToHorizontalBox(AccentBox))
+		if (UHorizontalBoxSlot* IconSlot = Row->AddChildToHorizontalBox(MakeToneIcon(WidgetTree, ESharedWorldTone::Warning, 20.f)))
 		{
-			AccentSlot->SetHorizontalAlignment(HAlign_Left);
-			AccentSlot->SetVerticalAlignment(VAlign_Fill);
-			AccentSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+			IconSlot->SetVerticalAlignment(VAlign_Center);
+			IconSlot->SetPadding(FMargin(18.f, 0.f, 0.f, 0.f));
 		}
 
 		UVerticalBox* TextCol = WidgetTree->ConstructWidget<UVerticalBox>();
@@ -53,7 +49,7 @@ TSharedRef<SWidget> USharedWorldNoticeOverlay::RebuildWidget()
 			TextSlot->SetHorizontalAlignment(HAlign_Fill);
 			TextSlot->SetVerticalAlignment(VAlign_Center);
 			TextSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-			TextSlot->SetPadding(FMargin(18.f, 14.f, 12.f, 14.f));
+			TextSlot->SetPadding(FMargin(14.f, 14.f, 12.f, 14.f));
 		}
 		BodyText = MakeText(WidgetTree, 16, TextPrimary, true);
 		BodyText->SetJustification(ETextJustify::Left);

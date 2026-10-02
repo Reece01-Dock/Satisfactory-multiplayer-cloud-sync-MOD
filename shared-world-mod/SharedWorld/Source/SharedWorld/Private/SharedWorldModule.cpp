@@ -1,10 +1,8 @@
 #include "Modules/ModuleManager.h"
-#include "SharedWorldPanel.h"
 #include "SharedWorldRootModules.h"
 #include "SharedWorldSubsystem.h"
 #include "SharedWorldTypes.h"
 #include "UI/SharedWorldBrowserWidget.h"
-#include "UI/SharedWorldDetailsWidget.h"
 #include "UI/SharedWorldGameInstanceModule.h"
 #include "UI/SharedWorldMainMenuButton.h"
 #include "UI/SharedWorldMigrationOverlay.h"
@@ -26,14 +24,11 @@ public:
 	{
 		(void)URootMenuWorld_SharedWorld::StaticClass();
 		(void)URootGameWorld_SharedWorld::StaticClass();
-		(void)USharedWorldPanel::StaticClass();
-		(void)USharedWorldEntry::StaticClass();
 		(void)USharedWorldSubsystem::StaticClass();
 		(void)USharedWorldGameInstanceModule::StaticClass();
 		(void)USharedWorldMainMenuButton::StaticClass();
 		(void)USharedWorldSessionMenuButton::StaticClass();
 		(void)USharedWorldBrowserWidget::StaticClass();
-		(void)USharedWorldDetailsWidget::StaticClass();
 		(void)USharedWorldSessionWidget::StaticClass();
 		(void)USharedWorldMigrationOverlay::StaticClass();
 		(void)USharedWorldWorldCard::StaticClass();
