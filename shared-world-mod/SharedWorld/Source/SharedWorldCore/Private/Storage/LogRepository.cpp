@@ -23,12 +23,12 @@ namespace sw
 			return Buf;
 		}
 
-		/** "000000000084" -> 84, anything else -> -1 (foreign files in the folder are ignored). */
+		/** "000000000084" or "000000000084.<writer>" -> 84; anything else -> -1 (foreign files are ignored). */
 		int64_t ParseSeqName(const std::string& Name)
 		{
-			if (Name.size() != 12) return -1;
+			if (Name.size() < 12 || (Name.size() > 12 && Name[12] != '.')) return -1;
 			int64_t V = 0;
-			for (char C : Name)
+			for (char C : Name.substr(0, 12))
 			{
 				if (C < '0' || C > '9') return -1;
 				V = V * 10 + (C - '0');
@@ -159,10 +159,9 @@ namespace sw
 		}
 		std::vector<LogEntryInfo> Infos;
 		SW_ASSIGN(Infos, Store->List(LogDir));
-		const std::string Name = SeqName(Seq);
 		for (const LogEntryInfo& I : Infos)
 		{
-			if (I.Name != Name) continue;
+			if (ParseSeqName(I.Name) != Seq) continue;
 			auto E = Load(I);
 			if (E && (*E)->Id == CommitId) return *E;
 		}
@@ -246,7 +245,11 @@ namespace sw
 		const std::string Text = json::Serialize(V);
 		if (Text.size() > MaxEntryBytes) return MakeError(ErrorCode::Invalid, "world record too large");
 
-		auto Created = Store->Create(LogDir, SeqName(Seq), Text);
+		// Exclusive stores: one fixed name per slot (the store refuses the second). Others: a unique name per writer, so
+		// nothing is ever overwritten, and the shared winner rule picks one.
+		const std::string Writer = Id.substr(Id.find('.') + 1);
+		const std::string EntryName = Store->ExclusiveCreate() ? SeqName(Seq) : SeqName(Seq) + "." + Writer;
+		auto Created = Store->Create(LogDir, EntryName, Text);
 		if (!Created)
 		{
 			if (Created.Is(ErrorCode::AlreadyExists)) return MakeError(ErrorCode::Conflict, "someone else changed the world first");
@@ -341,7 +344,12 @@ namespace sw
 		const TimeMs Now = SteadyNowMs();
 		for (const Stored& S : It->second)
 		{
-			if (S.Info.ServerTime + DelayMs <= Now) Out.push_back(S.Info); // simulated listing delay
+			if (S.Info.ServerTime + DelayMs <= Now) 
+			{
+				LogEntryInfo I = S.Info;
+				if (!bReportTime) I.ServerTime = 0;
+				Out.push_back(I);
+			} // simulated listing delay
 		}
 		return Out;
 	}
@@ -373,7 +381,7 @@ namespace sw
 		}
 		Stored S;
 		S.Info.Name = Name;
-		S.Info.Id = bExclusiveMode ? Name : Name + "#" + std::to_string(NextId++);
+		S.Info.Id = (bExclusiveMode || !bReportTime) ? Name : Name + "#" + std::to_string(NextId++);
 		S.Info.ServerTime = SteadyNowMs();
 		S.Data = Data;
 		Entries.push_back(S);

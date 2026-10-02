@@ -55,14 +55,15 @@ namespace
 			Fn("filesystem", [Dir, Clock]() { return MakeLeases(std::make_shared<FileRepository>(Dir), Clock); }, *Clock);
 		}
 		// The same lease races on plain file storage: append-only log, exclusive-create and duplicate-name stores.
-		for (bool bExclusive : {true, false})
+		for (int Mode = 0; Mode < 3; ++Mode) // 0 exclusive, 1 duplicates with server time, 2 rclone-like (names only)
 		{
+			const bool bExclusive = Mode == 0;
 			auto Clock = std::make_shared<FakeClock>(StartTime);
-			auto Store = std::make_shared<MemoryLogStore>(bExclusive, bExclusive ? 0 : 5);
+			auto Store = std::make_shared<MemoryLogStore>(bExclusive, bExclusive ? 0 : 5, Mode != 2);
 			LogRepositoryConfig C;
 			C.SettleMs = 30;
 			ASSERT_OK(CreateTestWorld(std::make_shared<LogRepository>(Store, C), Clock));
-			Fn(bExclusive ? "log-exclusive" : "log-duplicates",
+			Fn(Mode == 0 ? "log-exclusive" : (Mode == 1 ? "log-duplicates" : "log-rclone"),
 				[Store, C, Clock]() { return MakeLeases(std::make_shared<LogRepository>(Store, C), Clock); }, *Clock);
 		}
 	}

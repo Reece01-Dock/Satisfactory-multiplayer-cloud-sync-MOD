@@ -82,6 +82,45 @@ SW_TEST(LogRepo_DuplicateStoreInvisibleRaceHasExactlyOneWinner)
 	EXPECT_EQ(*Fresh.Head(), WinnerId);
 }
 
+// Same race on an rclone-like store: unique names per writer, no server time. Settle (60) >= 2 x listing delay (15).
+SW_TEST(LogRepo_RcloneLikeStoreInvisibleRaceHasExactlyOneWinner)
+{
+	for (int Round = 0; Round < 5; ++Round)
+	{
+		auto Store = std::make_shared<MemoryLogStore>(false, 15, false);
+		LogRepositoryConfig Cfg;
+		Cfg.SettleMs = 60;
+		LogRepository Setup(Store, Cfg);
+		auto Base = Setup.Commit("", Put("state/current.json", "base"), "create");
+		ASSERT_OK(Base);
+		std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+		auto B = std::make_shared<LogRepository>(Store, Cfg);
+		Result<std::string> BResult = MakeError(ErrorCode::Invalid, "not run");
+		bool bRanB = false;
+		LogRepositoryConfig ACfg = Cfg;
+		ACfg.Sleep = [&](TimeMs Ms)
+		{
+			if (!bRanB)
+			{
+				bRanB = true;
+				BResult = B->Commit(*Base, Put("state/current.json", "from-b"), "b");
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(Ms));
+		};
+		LogRepository A(Store, ACfg);
+		auto AResult = A.Commit(*Base, Put("state/current.json", "from-a"), "a");
+		ASSERT_TRUE(bRanB);
+		ASSERT_EQ((AResult.Ok() ? 1 : 0) + (BResult.Ok() ? 1 : 0), 1);
+		const std::string WinnerId = AResult.Ok() ? *AResult : *BResult;
+		LogRepository Fresh(Store);
+		EXPECT_EQ(*Fresh.Head(), WinnerId);
+		// The loser's entry was removed or is ignored: a further commit on the winner works for everyone.
+		auto Next = Fresh.Commit(WinnerId, Put("state/current.json", "next"), "next");
+		ASSERT_OK(Next);
+	}
+}
+
 SW_TEST(LogRepo_HistoryAndDirectoriesFollowTheWinningChain)
 {
 	auto Store = std::make_shared<MemoryLogStore>(true);

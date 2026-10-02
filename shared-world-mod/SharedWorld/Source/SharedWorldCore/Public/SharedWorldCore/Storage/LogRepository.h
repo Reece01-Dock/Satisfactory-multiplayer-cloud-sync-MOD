@@ -100,7 +100,9 @@ namespace sw
 	class MemoryLogStore final : public ILogStore
 	{
 	public:
-		MemoryLogStore(bool bExclusive, TimeMs ListingDelayMs = 0) : bExclusiveMode(bExclusive), DelayMs(ListingDelayMs) {}
+		/** bServerTime=false behaves like rclone: every entry reports time 0, so only names decide. */
+		MemoryLogStore(bool bExclusive, TimeMs ListingDelayMs = 0, bool bServerTime = true)
+			: bExclusiveMode(bExclusive), DelayMs(ListingDelayMs), bReportTime(bServerTime) {}
 		bool ExclusiveCreate() const override { return bExclusiveMode; }
 		Result<std::vector<LogEntryInfo>> List(const std::string& Dir) override;
 		Result<std::string> Read(const std::string& Dir, const LogEntryInfo& Entry) override;
@@ -112,6 +114,7 @@ namespace sw
 		struct Stored { LogEntryInfo Info; std::string Data; };
 		bool bExclusiveMode;
 		TimeMs DelayMs;
+		bool bReportTime;
 		std::mutex Mutex;
 		std::map<std::string, std::vector<Stored>> Dirs;
 		int64_t NextId = 1;

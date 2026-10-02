@@ -54,6 +54,13 @@ namespace
 			C.SettleMs = 30; // > the 5 ms listing delay
 			return std::unique_ptr<IWorldRepository>(std::make_unique<LogRepository>(Store, C));
 		});
+		// Like rclone: no server timestamps, only names decide; settle must exceed twice the listing delay.
+		Fn("log-rclone", [Store = std::make_shared<MemoryLogStore>(false, 5, false)]()
+		{
+			LogRepositoryConfig C;
+			C.SettleMs = 30;
+			return std::unique_ptr<IWorldRepository>(std::make_unique<LogRepository>(Store, C));
+		});
 	}
 }
 
