@@ -6,6 +6,7 @@
 
 #include "SharedWorldCore/Lease/Lease.h"
 #include "SharedWorldCore/Storage/FileStorage.h"
+#include "SharedWorldCore/Storage/LogRepository.h"
 #include "SharedWorldCore/Storage/MemoryStorage.h"
 #include "SharedWorldCore/Util/Sha256.h"
 #include "TestFramework.h"
@@ -52,6 +53,17 @@ namespace
 			ASSERT_OK(CreateTestWorld(std::make_shared<FileRepository>(Dir), Clock));
 			// A new FileRepository per manager behaves like a separate process.
 			Fn("filesystem", [Dir, Clock]() { return MakeLeases(std::make_shared<FileRepository>(Dir), Clock); }, *Clock);
+		}
+		// The same lease races on plain file storage: append-only log, exclusive-create and duplicate-name stores.
+		for (bool bExclusive : {true, false})
+		{
+			auto Clock = std::make_shared<FakeClock>(StartTime);
+			auto Store = std::make_shared<MemoryLogStore>(bExclusive, bExclusive ? 0 : 5);
+			LogRepositoryConfig C;
+			C.SettleMs = 30;
+			ASSERT_OK(CreateTestWorld(std::make_shared<LogRepository>(Store, C), Clock));
+			Fn(bExclusive ? "log-exclusive" : "log-duplicates",
+				[Store, C, Clock]() { return MakeLeases(std::make_shared<LogRepository>(Store, C), Clock); }, *Clock);
 		}
 	}
 }
